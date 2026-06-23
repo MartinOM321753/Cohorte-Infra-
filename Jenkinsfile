@@ -49,41 +49,14 @@ pipeline {
             }
         }
 
-        // 4. Generar .env en el workspace a partir de credenciales de Jenkins.
-        //    Nunca se versiona: vive solo en el workspace de este build.
-        //    Credenciales esperadas (tipo "Secret text") en Jenkins, ver README.md:
-        //    cohorte-db-password, cohorte-minio-access-key, cohorte-minio-secret-key,
-        //    cohorte-jwt-secret, cohorte-mail-username, cohorte-mail-password,
-        //    cohorte-mail-from, cohorte-frontend-url
+        // 4. Copiar el .env real al workspace desde una credencial de Jenkins tipo
+        //    "Secret file" (ID: cohorte-env-file). Nunca se versiona: vive solo en
+        //    el workspace de este build y Jenkins lo borra al terminar.
         stage('Preparar variables de entorno') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
-                withCredentials([
-                    string(credentialsId: 'cohorte-db-password',      variable: 'DB_PASSWORD'),
-                    string(credentialsId: 'cohorte-minio-access-key', variable: 'MINIO_ACCESS_KEY'),
-                    string(credentialsId: 'cohorte-minio-secret-key', variable: 'MINIO_SECRET_KEY'),
-                    string(credentialsId: 'cohorte-jwt-secret',       variable: 'SECRET_KEY'),
-                    string(credentialsId: 'cohorte-mail-username',    variable: 'MAIL_USERNAME'),
-                    string(credentialsId: 'cohorte-mail-password',    variable: 'MAIL_PASSWORD'),
-                    string(credentialsId: 'cohorte-mail-from',        variable: 'MAIL_FROM'),
-                    string(credentialsId: 'cohorte-frontend-url',     variable: 'FRONTEND_URL'),
-                ]) {
-                    bat '''
-                        (
-                          echo DB_USER_NAME=root
-                          echo DB_PASSWORD=%DB_PASSWORD%
-                          echo MINIO_ACCESS_KEY=%MINIO_ACCESS_KEY%
-                          echo MINIO_SECRET_KEY=%MINIO_SECRET_KEY%
-                          echo SECRET_KEY=%SECRET_KEY%
-                          echo MAIL_USERNAME=%MAIL_USERNAME%
-                          echo MAIL_PASSWORD=%MAIL_PASSWORD%
-                          echo MAIL_FROM=%MAIL_FROM%
-                          echo FRONTEND_URL=%FRONTEND_URL%
-                          echo COOKIE_SECURE=true
-                          echo SPRING_PROFILES_ACTIVE=prod
-                          echo VITE_API_URL=/api
-                        ) > .env
-                    '''
+                withCredentials([file(credentialsId: 'cohorte-env-file', variable: 'ENV_FILE')]) {
+                    bat 'copy /Y "%ENV_FILE%" .env'
                 }
             }
         }

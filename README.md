@@ -31,21 +31,24 @@ docker compose -p cohorteapp up --build -d
 
 ## Configuración de Jenkins
 
-### 1. Credenciales (Manage Jenkins → Credentials → Global)
+### 1. Credencial (Manage Jenkins → Credentials → Global)
 
-Crea cada una como **Secret text**, con exactamente estos IDs (el Jenkinsfile los
-referencia por nombre):
+Una sola credencial tipo **Secret file**:
 
-| Credential ID              | Valor                                            |
-|-----------------------------|---------------------------------------------------|
-| `cohorte-db-password`       | contraseña de MySQL (root) en producción          |
-| `cohorte-minio-access-key`  | usuario de MinIO en producción                    |
-| `cohorte-minio-secret-key`  | contraseña de MinIO en producción                 |
-| `cohorte-jwt-secret`        | clave JWT (`openssl rand -base64 32`)             |
-| `cohorte-mail-username`     | usuario SMTP                                      |
-| `cohorte-mail-password`     | contraseña/API key SMTP                           |
-| `cohorte-mail-from`         | correo remitente de notificaciones                |
-| `cohorte-frontend-url`      | URL pública del frontend, ej. `https://midominio.com` |
+1. *Add Credentials* → **Kind**: `Secret file`.
+2. **File**: sube tu `.env` real completo (el mismo que usas en local, con
+   `FRONTEND_URL` apuntando al dominio real de producción, no a `localhost`).
+3. **ID**: `cohorte-env-file` (el Jenkinsfile lo referencia por este nombre exacto).
+4. *Create*.
+
+Cuando cambie cualquier valor (rotas una contraseña, cambias el dominio, etc.),
+edita esa misma credencial y vuelve a subir el archivo actualizado — no hay que
+tocar el Jenkinsfile.
+
+> Alternativa más granular: si prefieres una credencial por variable (más fácil
+> de auditar quién cambió qué, pero más tedioso de mantener), se puede volver al
+> esquema de 8 `Secret text` + `withCredentials([string(...), ...])` armando el
+> `.env` línea por línea en el Jenkinsfile. No es la opción actual de este repo.
 
 Si `Cohorte-IMSS` o `Cohorte-front` son repos privados, agrega además una
 credencial de tipo **Username with password** (token de GitHub) y úsala en el
@@ -74,7 +77,7 @@ Si quieres que un push al backend o al frontend también dispare el deploy
 1. Checkout de este repo.
 2. Verifica que la rama sea `main` (si no, termina sin desplegar).
 3. Clona `Cohorte-IMSS` → `./cohorte_test` y `Cohorte-front` → `./client`.
-4. Genera `.env` en el workspace desde las credenciales de Jenkins.
+4. Copia el `.env` en el workspace desde la credencial `cohorte-env-file`.
 5. `docker compose down` (libera contenedores; los volúmenes externos persisten).
 6. `docker compose up --build -d`.
 7. Verifica que `cohorte-backend` y `cohorte-frontend` queden corriendo.
