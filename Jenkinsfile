@@ -1,7 +1,5 @@
 pipeline {
     agent any
-    // Si tienes un nodo Windows etiquetado:
-    // agent { label 'windows' }
 
     environment {
         COMPOSE_PROJECT = 'cohorteapp'
@@ -40,11 +38,11 @@ pipeline {
         stage('Clonar repos de aplicación') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
-                bat '''
-                    if exist cohorte_test rmdir /s /q cohorte_test
-                    git clone --depth 1 --branch %DEPLOY_BRANCH% %BACKEND_REPO% cohorte_test
-                    if exist client rmdir /s /q client
-                    git clone --depth 1 --branch %DEPLOY_BRANCH% %FRONTEND_REPO% client
+                sh '''
+                    rm -rf cohorte_test
+                    git clone --depth 1 --branch "$DEPLOY_BRANCH" "$BACKEND_REPO" cohorte_test
+                    rm -rf client
+                    git clone --depth 1 --branch "$DEPLOY_BRANCH" "$FRONTEND_REPO" client
                 '''
             }
         }
@@ -56,7 +54,7 @@ pipeline {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
                 withCredentials([file(credentialsId: 'cohorte-env-file', variable: 'ENV_FILE')]) {
-                    bat 'copy /Y "%ENV_FILE%" .env'
+                    sh 'cp -f "$ENV_FILE" .env'
                 }
             }
         }
@@ -65,8 +63,8 @@ pipeline {
         stage('Parando servicios existentes') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
-                bat '''
-                    docker compose -p %COMPOSE_PROJECT% down || exit /b 0
+                sh '''
+                    docker compose -p "$COMPOSE_PROJECT" down || true
                 '''
             }
         }
@@ -75,8 +73,8 @@ pipeline {
         stage('Construyendo y desplegando servicios') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
-                bat '''
-                    docker compose -p %COMPOSE_PROJECT% up --build -d
+                sh '''
+                    docker compose -p "$COMPOSE_PROJECT" up --build -d
                 '''
             }
         }
@@ -85,21 +83,19 @@ pipeline {
         stage('Verificando despliegue') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
-                bat '''
-                    echo Esperando 15s para que los servicios inicien...
-                    timeout /t 15 /nobreak > nul
-                    docker compose -p %COMPOSE_PROJECT% ps
-                    docker compose -p %COMPOSE_PROJECT% ps --filter "status=running" | find "cohorte-backend" > nul
-                    if errorlevel 1 (
-                        echo ERROR: el backend no está en ejecución
-                        exit /b 1
-                    )
-                    docker compose -p %COMPOSE_PROJECT% ps --filter "status=running" | find "cohorte-frontend" > nul
-                    if errorlevel 1 (
-                        echo ERROR: el frontend no está en ejecución
-                        exit /b 1
-                    )
-                    echo Despliegue verificado correctamente
+                sh '''
+                    echo "Esperando 15s para que los servicios inicien..."
+                    sleep 15
+                    docker compose -p "$COMPOSE_PROJECT" ps
+                    docker compose -p "$COMPOSE_PROJECT" ps --filter "status=running" | grep -q "cohorte-backend" || {
+                        echo "ERROR: el backend no está en ejecución"
+                        exit 1
+                    }
+                    docker compose -p "$COMPOSE_PROJECT" ps --filter "status=running" | grep -q "cohorte-frontend" || {
+                        echo "ERROR: el frontend no está en ejecución"
+                        exit 1
+                    }
+                    echo "Despliegue verificado correctamente"
                 '''
             }
         }
@@ -116,9 +112,9 @@ pipeline {
             }
         }
         failure {
-            bat '''
-                echo === LOGS DEL BACKEND (ultimas 80 lineas) ===
-                docker compose -p %COMPOSE_PROJECT% logs --tail=80 backend || exit /b 0
+            sh '''
+                echo "=== LOGS DEL BACKEND (ultimas 80 lineas) ==="
+                docker compose -p "$COMPOSE_PROJECT" logs --tail=80 backend || true
             '''
         }
         always {
