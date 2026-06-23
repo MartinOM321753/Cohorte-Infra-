@@ -61,7 +61,6 @@ services:
       DB_URL: jdbc:mysql://cohorte-database:3306/cohorte?createDatabaseIfNotExist=true&serverTimezone=UTC&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
       DB_USER_NAME: ${DB_USER_NAME}
       DB_PASSWORD: ${DB_PASSWORD}
-      DB_PASS: ${DB_PASSWORD}
       SECRET_KEY: ${SECRET_KEY}
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
       MINIO_URL: http://minio:9000
