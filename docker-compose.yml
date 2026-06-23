@@ -1,0 +1,118 @@
+services:
+
+  # ── Base de datos ─────────────────────────────────────────────────────────
+  database:
+    image: mysql:8
+    container_name: cohorte-database
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: cohorte
+    ports:
+      # Solo accesible desde el propio host (ej. vía SSH tunnel para administración).
+      # Nunca expuesto a internet: el backend habla con "database:3306" por la red interna.
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - cohorte-volume:/var/lib/mysql
+    networks:
+      - cohorte-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Almacenamiento de objetos ─────────────────────────────────────────────
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    container_name: cohorte-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    ports:
+      # Solo accesible desde el propio host. El backend usa "http://minio:9000" por la red
+      # interna; la consola (9001) solo deberia abrirse via SSH tunnel/VPN, nunca publica.
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-volume:/data
+    networks:
+      - cohorte-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ── Backend (Spring Boot) ─────────────────────────────────────────────────
+  # build.context apunta a ./cohorte_test: el Jenkinsfile clona el repo Cohorte-IMSS
+  # ahi antes de levantar este compose. No es codigo versionado en este repo.
+  backend:
+    image: server:1.0-cohorte
+    build:
+      context: ./cohorte_test
+    container_name: cohorte-backend
+    environment:
+      PORT: 8080
+      DB_URL: jdbc:mysql://cohorte-database:3306/cohorte?createDatabaseIfNotExist=true&serverTimezone=UTC&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
+      DB_USER_NAME: ${DB_USER_NAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_PASS: ${DB_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      MINIO_URL: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET: cohorte-docs
+      MINIO_PRESIGNED_EXPIRY: 60
+      MAIL_ENABLED: "true"
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM}
+      FRONTEND_URL: ${FRONTEND_URL}
+      CORS_ORIGINS: ${FRONTEND_URL}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+    ports:
+      # El frontend habla con el backend por la red interna ("backend:8080", ver nginx.conf).
+      # Este puerto solo es para depuracion/Swagger desde el propio host; no debe ser publico.
+      - "127.0.0.1:8081:8080"
+    networks:
+      - cohorte-net
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # ── Frontend (React + nginx) ──────────────────────────────────────────────
+  # build.context apunta a ./client: el Jenkinsfile clona el repo Cohorte-front
+  # ahi antes de levantar este compose. No es codigo versionado en este repo.
+  frontend:
+    image: web:1.0-cohorte
+    build:
+      context: ./client
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: cohorte-frontend
+    ports:
+      - "80:80"
+    networks:
+      - cohorte-net
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+volumes:
+  cohorte-volume:
+    external: true
+  minio-volume:
+    external: true
+
+networks:
+  cohorte-net:
+    external: true

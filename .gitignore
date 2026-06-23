@@ -1,0 +1,9 @@
+# Secretos reales — nunca se versionan
+.env
+.env.*
+!.env.example
+
+# Repos de aplicacion clonados aqui por el pipeline en tiempo de build
+# (no son codigo de este repo; viven en Cohorte-IMSS y Cohorte-front)
+/cohorte_test/
+/client/
