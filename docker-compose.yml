@@ -100,17 +100,37 @@ services:
     container_name: cohorte-frontend
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # Carpeta donde Certbot deja el archivo de verificación HTTP-01 y nginx lo sirve.
+      - certbot-www:/var/www/certbot
+      # Certificados emitidos por Certbot (fullchain.pem / privkey.pem). Solo lectura: nginx
+      # nunca debe escribir aqui, solo Certbot.
+      - certbot-conf:/etc/letsencrypt:ro
     networks:
       - cohorte-net
     restart: unless-stopped
     depends_on:
       - backend
 
+  # ── Certbot (emisión y renovación de certificados Let's Encrypt) ──────────
+  # La imagen por defecto corre "certbot --help" y sale si no se le pasa comando,
+  # asi que es inofensiva con "docker compose up". Jenkins la invoca explícitamente
+  # con "docker compose run --rm certbot certonly ..." cuando falta el certificado.
+  certbot:
+    image: certbot/certbot
+    container_name: cohorte-certbot
+    volumes:
+      - certbot-www:/var/www/certbot
+      - certbot-conf:/etc/letsencrypt
+
 volumes:
   cohorte-volume:
     external: true
   minio-volume:
     external: true
+  certbot-www:
+  certbot-conf:
 
 networks:
   cohorte-net:

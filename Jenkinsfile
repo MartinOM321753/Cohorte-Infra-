@@ -99,6 +99,48 @@ pipeline {
                 '''
             }
         }
+
+        // 8. Emitir el certificado SSL la primera vez (idempotente: si ya existe, no
+        //    hace nada). El contenedor "frontend" arranca sirviendo HTTP-only mientras
+        //    no haya certificado (ver docker-entrypoint.sh del repo Cohorte-front),
+        //    asi que el reto HTTP-01 de Let's Encrypt puede resolverse sin que el
+        //    pipeline falle.
+        stage('Emitir certificado SSL si falta') {
+            when { expression { env.IS_MAIN == 'true' } }
+            steps {
+                sh '''
+                    set -a
+                    . ./.env
+                    set +a
+                    DOMAIN="hwcs.cipps.unam.mx"
+
+                    if docker compose -p "$COMPOSE_PROJECT" exec -T frontend test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
+                        echo "Certificado ya existe para $DOMAIN, no se vuelve a emitir."
+                    else
+                        echo "No hay certificado para $DOMAIN, solicitando uno a Let's Encrypt..."
+                        docker compose -p "$COMPOSE_PROJECT" run --rm certbot certonly \
+                            --webroot --webroot-path=/var/www/certbot \
+                            -d "$DOMAIN" \
+                            --email "$CERTBOT_EMAIL" --agree-tos --no-eff-email --non-interactive
+
+                        echo "Certificado emitido. Reiniciando frontend para activar HTTPS..."
+                        docker compose -p "$COMPOSE_PROJECT" restart frontend
+                    fi
+                '''
+            }
+        }
+
+        // 9. Renovar si ya esta cerca de expirar (certbot renew no hace nada si le
+        //    quedan mas de 30 dias). Si renovo, recarga nginx sin downtime.
+        stage('Renovar certificado SSL si aplica') {
+            when { expression { env.IS_MAIN == 'true' } }
+            steps {
+                sh '''
+                    docker compose -p "$COMPOSE_PROJECT" run --rm certbot renew --quiet || true
+                    docker compose -p "$COMPOSE_PROJECT" exec -T frontend nginx -s reload || true
+                '''
+            }
+        }
     }
 
     post {
