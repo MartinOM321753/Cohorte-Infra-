@@ -99,7 +99,7 @@ services:
         VITE_API_URL: ${VITE_API_URL}
     container_name: cohorte-frontend
     ports:
-      - "80:443"
+      - "80:80"
     networks:
       - cohorte-net
     restart: unless-stopped
