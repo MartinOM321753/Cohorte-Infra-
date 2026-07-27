@@ -96,38 +96,55 @@ una copia a Google Drive (vía `rclone`). Se ejecuta en dos momentos:
 
 - **Antes de cada deploy** (stage `Respaldo de base de datos` del Jenkinsfile),
   contra los contenedores actuales, antes de tocarlos.
-- **Todos los días a las 12:01am**, vía un cron en el servidor que el propio
-  pipeline instala y mantiene actualizado (`/root/cohorte-infra-scripts/backup-db.sh`).
+- **Todos los días a las 12:01am**, vía un cron del usuario `jenkins` (el mismo
+  bajo el que corre el pipeline) que el propio pipeline instala y mantiene
+  actualizado (`$HOME/cohorte-infra-scripts/backup-db.sh`, donde `$HOME` es el
+  home de `jenkins` — normalmente `/var/lib/jenkins`).
 
 No depende del `.env` del deploy: lee la contraseña de MySQL directamente de
 la variable de entorno `MYSQL_ROOT_PASSWORD` que ya vive dentro del contenedor
 `cohorte-database`, así que el script funciona igual sin importar quién lo invoque.
 
-Retención: **14 días** de dumps locales en `/root/backups/cohorte/` y **30
-días** en Drive (se borran automáticamente los más viejos en cada corrida).
-Para cambiar estos valores, o la ruta de backups, edita las constantes al
-inicio de `scripts/backup-db.sh`.
+Retención: **14 días** de dumps locales en `$HOME/backups/cohorte/` (home del
+usuario `jenkins`) y **30 días** en Drive (se borran automáticamente los más
+viejos en cada corrida). Para cambiar estos valores, o la ruta de backups,
+edita las constantes al inicio de `scripts/backup-db.sh`.
 
 ### Setup único: autorizar Google Drive con rclone
 
+El pipeline de Jenkins corre como el usuario de sistema `jenkins` (no `root`),
+así que el remote de rclone debe configurarse con ESE usuario — si lo
+configuras como `root` o con tu usuario de SSH, `jenkins` no lo va a ver.
+
 Este paso requiere interacción humana (flujo OAuth) y solo se hace una vez,
-como root en el servidor:
+como usuario `jenkins` en el servidor:
 
 ```bash
-# 1. Instalar rclone (si no está ya instalado)
+# 1. Instalar rclone (si no está ya instalado) — esto sí como root/sudo
 curl https://rclone.org/install.sh | sudo bash
 
-# 2. Crear el remote "gdrive-cohorte"
+# 2. Abrir una shell interactiva como el usuario "jenkins"
+sudo -iu jenkins
+
+# 3. Crear el remote "gdrive-cohorte" (ya como jenkins)
 rclone config
 #   n) New remote
 #   name> gdrive-cohorte
 #   Storage> drive   (Google Drive)
-#   Sigue el flujo de autorización OAuth (copia/pega el link en un navegador)
+#   client_id / client_secret> (vacío, Enter)
+#   scope> 1 (acceso completo de lectura/escritura)
+#   Sigue el flujo de autorización OAuth. Si el servidor no tiene navegador
+#   ("Use auto config?" → n), corre el comando "rclone authorize ..." que te
+#   da en TU propia laptop (con rclone instalado ahí), autoriza en el
+#   navegador, y pega el token resultante de vuelta en esta terminal.
 #   Cuando pregunte "Configure this as a Shared Drive?" → no, a menos que uses
 #   una Unidad Compartida de Drive.
 
-# 3. Verificar que funciona
+# 4. Verificar que funciona (todavía como jenkins)
 rclone lsd gdrive-cohorte:
+
+# 5. Salir de la shell de jenkins
+exit
 ```
 
 La carpeta `CohorteApp-Backups` en Drive se crea sola en la primera subida —
@@ -141,7 +158,7 @@ el paso 2 (`rclone config`, `Edit existing remote`).
 ### Restaurar un backup a mano
 
 ```bash
-gunzip -c /root/backups/cohorte/cohorte_<fecha>.sql.gz | \
+gunzip -c /var/lib/jenkins/backups/cohorte/cohorte_<fecha>.sql.gz | \
   docker exec -i cohorte-database sh -c 'exec mysql -u root -p"$MYSQL_ROOT_PASSWORD" cohorte'
 ```
 

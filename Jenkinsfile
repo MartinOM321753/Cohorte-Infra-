@@ -160,18 +160,19 @@ pipeline {
         // 11. Mantener instalado y actualizado el cron de respaldo diario (12:01am)
         //     en el propio servidor, independiente de Jenkins. Copia el script a una
         //     ruta fija (fuera del workspace de Jenkins, que puede limpiarse) y
-        //     reemplaza cualquier entrada previa en el crontab de root para que
-        //     apunte siempre a la versión más reciente del script. No bloqueante:
-        //     un fallo aquí no debe tumbar un deploy que ya se completó bien.
+        //     reemplaza cualquier entrada previa en el crontab del usuario que
+        //     ejecuta este pipeline (jenkins) para que apunte siempre a la versión
+        //     más reciente del script. No bloqueante: un fallo aquí no debe tumbar
+        //     un deploy que ya se completó bien.
         stage('Instalar cron de respaldo diario') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
                 sh '''
                     set +e
-                    mkdir -p /root/cohorte-infra-scripts
-                    cp -f scripts/backup-db.sh /root/cohorte-infra-scripts/backup-db.sh
-                    chmod +x /root/cohorte-infra-scripts/backup-db.sh
-                    CRON_LINE="1 0 * * * /root/cohorte-infra-scripts/backup-db.sh >> /root/backups/cohorte/backup.log 2>&1"
+                    mkdir -p "$HOME/cohorte-infra-scripts"
+                    cp -f scripts/backup-db.sh "$HOME/cohorte-infra-scripts/backup-db.sh"
+                    chmod +x "$HOME/cohorte-infra-scripts/backup-db.sh"
+                    CRON_LINE="1 0 * * * $HOME/cohorte-infra-scripts/backup-db.sh >> $HOME/backups/cohorte/backup.log 2>&1"
                     ( crontab -l 2>/dev/null | grep -vF "backup-db.sh" ; echo "$CRON_LINE" ) | crontab -
                     echo "Cron de respaldo diario instalado/actualizado."
                     exit 0

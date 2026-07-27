@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-BACKUP_DIR="/root/backups/cohorte"
+BACKUP_DIR="${HOME}/backups/cohorte"
 DB_CONTAINER="cohorte-database"
 DB_NAME="cohorte"
 RCLONE_REMOTE="gdrive-cohorte:CohorteApp-Backups"
