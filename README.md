@@ -78,10 +78,76 @@ Si quieres que un push al backend o al frontend también dispare el deploy
 2. Verifica que la rama sea `main` (si no, termina sin desplegar).
 3. Clona `Cohorte-IMSS` → `./cohorte_test` y `Cohorte-front` → `./client`.
 4. Copia el `.env` en el workspace desde la credencial `cohorte-env-file`.
-5. `docker compose down` (libera contenedores; los volúmenes externos persisten).
-6. `docker compose up --build -d`.
-7. Verifica que `cohorte-backend` y `cohorte-frontend` queden corriendo.
-8. Si falla, imprime los últimos logs del backend.
+5. **Respalda la base de datos** (`scripts/backup-db.sh`) contra el contenedor
+   que está a punto de bajarse. Si el dump falla de verdad, el pipeline se
+   detiene aquí — nunca baja los contenedores sin backup fresco.
+6. `docker compose down` (libera contenedores; los volúmenes externos persisten).
+7. `docker compose up --build -d`.
+8. Verifica que `cohorte-backend` y `cohorte-frontend` queden corriendo.
+9. Emite/renueva el certificado SSL si aplica.
+10. **Instala/actualiza el cron de respaldo diario** (12:01am) en el servidor,
+    apuntando siempre a la última versión de `scripts/backup-db.sh`.
+11. Si algo falla, imprime los últimos logs del backend.
+
+## Respaldo de base de datos
+
+`scripts/backup-db.sh` genera un dump comprimido de la base `cohorte` y sube
+una copia a Google Drive (vía `rclone`). Se ejecuta en dos momentos:
+
+- **Antes de cada deploy** (stage `Respaldo de base de datos` del Jenkinsfile),
+  contra los contenedores actuales, antes de tocarlos.
+- **Todos los días a las 12:01am**, vía un cron en el servidor que el propio
+  pipeline instala y mantiene actualizado (`/root/cohorte-infra-scripts/backup-db.sh`).
+
+No depende del `.env` del deploy: lee la contraseña de MySQL directamente de
+la variable de entorno `MYSQL_ROOT_PASSWORD` que ya vive dentro del contenedor
+`cohorte-database`, así que el script funciona igual sin importar quién lo invoque.
+
+Retención: **14 días** de dumps locales en `/root/backups/cohorte/` y **30
+días** en Drive (se borran automáticamente los más viejos en cada corrida).
+Para cambiar estos valores, o la ruta de backups, edita las constantes al
+inicio de `scripts/backup-db.sh`.
+
+### Setup único: autorizar Google Drive con rclone
+
+Este paso requiere interacción humana (flujo OAuth) y solo se hace una vez,
+como root en el servidor:
+
+```bash
+# 1. Instalar rclone (si no está ya instalado)
+curl https://rclone.org/install.sh | sudo bash
+
+# 2. Crear el remote "gdrive-cohorte"
+rclone config
+#   n) New remote
+#   name> gdrive-cohorte
+#   Storage> drive   (Google Drive)
+#   Sigue el flujo de autorización OAuth (copia/pega el link en un navegador)
+#   Cuando pregunte "Configure this as a Shared Drive?" → no, a menos que uses
+#   una Unidad Compartida de Drive.
+
+# 3. Verificar que funciona
+rclone lsd gdrive-cohorte:
+```
+
+La carpeta `CohorteApp-Backups` en Drive se crea sola en la primera subida —
+no hace falta crearla a mano.
+
+Si en algún momento el token de Drive expira o deja de funcionar, el script
+sigue guardando el dump local normalmente (solo se pierde la subida a la
+nube ese día) y lo reporta como advertencia en el log; para renovarlo, repite
+el paso 2 (`rclone config`, `Edit existing remote`).
+
+### Restaurar un backup a mano
+
+```bash
+gunzip -c /root/backups/cohorte/cohorte_<fecha>.sql.gz | \
+  docker exec -i cohorte-database sh -c 'exec mysql -u root -p"$MYSQL_ROOT_PASSWORD" cohorte'
+```
+
+Verifica primero que tienes un backup reciente de seguridad antes de restaurar
+sobre una base de datos con datos que quieras conservar — esto sobreescribe
+las tablas existentes con las del dump.
 
 ## Notas de seguridad
 

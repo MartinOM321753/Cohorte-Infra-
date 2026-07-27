@@ -59,7 +59,22 @@ pipeline {
             }
         }
 
-        // 5. Detener los servicios en ejecución
+        // 5. Respaldar la base de datos ANTES de tocar los contenedores existentes.
+        //    Usa el contenedor "cohorte-database" que todavía está corriendo con los
+        //    datos previos al deploy. Si el dump falla de verdad (no el caso de "el
+        //    contenedor aún no existe", que scripts/backup-db.sh trata como éxito),
+        //    esta stage aborta el pipeline antes de "docker compose down".
+        stage('Respaldo de base de datos') {
+            when { expression { env.IS_MAIN == 'true' } }
+            steps {
+                sh '''
+                    chmod +x scripts/backup-db.sh
+                    ./scripts/backup-db.sh
+                '''
+            }
+        }
+
+        // 6. Detener los servicios en ejecución
         stage('Parando servicios existentes') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
@@ -69,7 +84,7 @@ pipeline {
             }
         }
 
-        // 6. Construir y levantar todos los servicios
+        // 7. Construir y levantar todos los servicios
         stage('Construyendo y desplegando servicios') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
@@ -79,7 +94,7 @@ pipeline {
             }
         }
 
-        // 7. Verificar que los contenedores quedaron en ejecución
+        // 8. Verificar que los contenedores quedaron en ejecución
         stage('Verificando despliegue') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
@@ -100,7 +115,7 @@ pipeline {
             }
         }
 
-        // 8. Emitir el certificado SSL la primera vez (idempotente: si ya existe, no
+        // 9. Emitir el certificado SSL la primera vez (idempotente: si ya existe, no
         //    hace nada). El contenedor "frontend" arranca sirviendo HTTP-only mientras
         //    no haya certificado (ver docker-entrypoint.sh del repo Cohorte-front),
         //    asi que el reto HTTP-01 de Let's Encrypt puede resolverse sin que el
@@ -130,14 +145,36 @@ pipeline {
             }
         }
 
-        // 9. Renovar si ya esta cerca de expirar (certbot renew no hace nada si le
-        //    quedan mas de 30 dias). Si renovo, recarga nginx sin downtime.
+        // 10. Renovar si ya esta cerca de expirar (certbot renew no hace nada si le
+        //     quedan mas de 30 dias). Si renovo, recarga nginx sin downtime.
         stage('Renovar certificado SSL si aplica') {
             when { expression { env.IS_MAIN == 'true' } }
             steps {
                 sh '''
                     docker compose -p "$COMPOSE_PROJECT" run --rm certbot renew --quiet || true
                     docker compose -p "$COMPOSE_PROJECT" exec -T frontend nginx -s reload || true
+                '''
+            }
+        }
+
+        // 11. Mantener instalado y actualizado el cron de respaldo diario (12:01am)
+        //     en el propio servidor, independiente de Jenkins. Copia el script a una
+        //     ruta fija (fuera del workspace de Jenkins, que puede limpiarse) y
+        //     reemplaza cualquier entrada previa en el crontab de root para que
+        //     apunte siempre a la versión más reciente del script. No bloqueante:
+        //     un fallo aquí no debe tumbar un deploy que ya se completó bien.
+        stage('Instalar cron de respaldo diario') {
+            when { expression { env.IS_MAIN == 'true' } }
+            steps {
+                sh '''
+                    set +e
+                    mkdir -p /root/cohorte-infra-scripts
+                    cp -f scripts/backup-db.sh /root/cohorte-infra-scripts/backup-db.sh
+                    chmod +x /root/cohorte-infra-scripts/backup-db.sh
+                    CRON_LINE="1 0 * * * /root/cohorte-infra-scripts/backup-db.sh >> /root/backups/cohorte/backup.log 2>&1"
+                    ( crontab -l 2>/dev/null | grep -vF "backup-db.sh" ; echo "$CRON_LINE" ) | crontab -
+                    echo "Cron de respaldo diario instalado/actualizado."
+                    exit 0
                 '''
             }
         }
