@@ -21,6 +21,14 @@ services:
     container_name: traefik
     restart: unless-stopped
 
+    environment:
+      # Sin esto, el cliente de Docker que trae Traefik negocia la version 1.24
+      # de la API y los daemons modernos la rechazan ("client version 1.24 is
+      # too old. Minimum supported API version is 1.40"). El proveedor docker
+      # nunca conecta, Traefik no descubre ningun contenedor y responde 404 a
+      # todo. Fijar la version evita la negociacion.
+      DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.44}
+
     command:
       # ── Puntos de entrada ────────────────────────────────────────────────
       - "--entrypoints.web.address=:80"
