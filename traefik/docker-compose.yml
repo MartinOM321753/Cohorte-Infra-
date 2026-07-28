@@ -1,0 +1,89 @@
+﻿# ============================================================================
+#  Traefik -- reverse proxy compartido
+#
+#  Stack INDEPENDIENTE del stack de la aplicacion, a proposito: Traefik sirve
+#  a produccion y a staging al mismo tiempo, asi que un "docker compose down"
+#  de cualquiera de los dos ambientes no debe tumbarlo.
+#
+#  Es el UNICO contenedor del servidor que publica puertos al host (80/443).
+#  Los contenedores de cada ambiente no publican nada: Traefik les habla por
+#  la red interna "traefik-net" y decide a cual mandar cada peticion segun el
+#  dominio (Host header) con el que llega.
+#
+#  Levantar:
+#     docker compose -p traefik up -d
+# ============================================================================
+
+services:
+
+  traefik:
+    image: traefik:v3.3
+    container_name: traefik
+    restart: unless-stopped
+
+    command:
+      # ── Puntos de entrada ────────────────────────────────────────────────
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Todo el trafico HTTP se redirige a HTTPS de forma permanente (301).
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+
+      # ── Descubrimiento de servicios via Docker ───────────────────────────
+      # exposedByDefault=false: un contenedor solo se publica si lleva
+      # explicitamente la etiqueta "traefik.enable=true". Nada se expone por
+      # accidente.
+      - "--providers.docker=true"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=traefik-net"
+
+      # ── Certificados TLS automaticos (Let's Encrypt, reto HTTP-01) ────────
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      # CA configurable: apuntar al entorno de pruebas de Let's Encrypt
+      # mientras se valida el setup evita consumir el limite de emisiones
+      # reales (5 certificados por dominio por semana).
+      - "--certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}"
+
+      # ── Observabilidad ───────────────────────────────────────────────────
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-INFO}"
+      - "--accesslog=true"
+      # Dashboard deshabilitado: no hay razon para exponer la topologia del
+      # proxy. Para inspeccionarlo puntualmente, ver README (seccion Traefik).
+      - "--api.dashboard=false"
+      - "--global.sendanonymoususage=false"
+      # Habilita el endpoint interno /ping que consume el healthcheck de abajo.
+      - "--ping=true"
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      # Solo lectura: Traefik unicamente necesita LEER el estado de Docker para
+      # descubrir contenedores y sus etiquetas. Nunca debe poder modificarlo.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Almacen de certificados emitidos. Persiste entre reinicios para no
+      # volver a pedirlos a Let's Encrypt en cada deploy.
+      - traefik-acme:/letsencrypt
+
+    networks:
+      - traefik-net
+
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  traefik-acme:
+
+networks:
+  traefik-net:
+    external: true
