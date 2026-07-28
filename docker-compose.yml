@@ -1,20 +1,49 @@
+# ============================================================================
+#  CohorteApp -- stack de aplicacion (parametrizado por ambiente)
+#
+#  El MISMO archivo sirve para produccion y para staging. Lo que cambia entre
+#  ambientes son variables del .env, no el compose:
+#
+#     Variable              produccion          staging
+#     ────────────────────  ──────────────────  ──────────────────────────
+#     CONTAINER_PREFIX      cohorte             cohorte-staging
+#     INTERNAL_NET          cohorte-net         cohorte-staging-net
+#     DB_VOLUME             cohorte-volume      cohorte-staging-volume
+#     MINIO_VOLUME          minio-volume        minio-staging-volume
+#     APP_DOMAIN            hwcs.cipps.unam.mx  staging.hwcs.cipps.unam.mx
+#     DB_HOST_PORT          3307                3308
+#     BACKEND_HOST_PORT     8081                8082
+#     MINIO_*_HOST_PORT     9000 / 9001         9002 / 9003
+#
+#  Los valores por defecto de cada variable son los de PRODUCCION, para que un
+#  deploy de produccion se comporte igual que antes de introducir staging.
+#
+#  Ningun servicio publica 80/443: eso lo hace exclusivamente Traefik (ver
+#  traefik/docker-compose.yml), que enruta por dominio. Los puertos que si se
+#  publican estan atados a 127.0.0.1 y son solo para administracion local.
+#
+#  Levantar:
+#     docker compose -p cohorteapp up --build -d              (produccion)
+#     docker compose -p cohorteapp-staging up --build -d      (staging)
+# ============================================================================
+
 services:
 
   # ── Base de datos ─────────────────────────────────────────────────────────
   database:
     image: mysql:8
-    container_name: cohorte-database
+    container_name: ${CONTAINER_PREFIX:-cohorte}-database
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
       MYSQL_DATABASE: cohorte
     ports:
       # Solo accesible desde el propio host (ej. vía SSH tunnel para administración).
       # Nunca expuesto a internet: el backend habla con "database:3306" por la red interna.
-      - "127.0.0.1:3307:3306"
+      - "127.0.0.1:${DB_HOST_PORT:-3307}:3306"
     volumes:
-      - cohorte-volume:/var/lib/mysql
+      - db-data:/var/lib/mysql
     networks:
-      - cohorte-net
+      - internal
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD}"]
@@ -26,7 +55,7 @@ services:
   # ── Almacenamiento de objetos ─────────────────────────────────────────────
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-    container_name: cohorte-minio
+    container_name: ${CONTAINER_PREFIX:-cohorte}-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
@@ -34,12 +63,12 @@ services:
     ports:
       # Solo accesible desde el propio host. El backend usa "http://minio:9000" por la red
       # interna; la consola (9001) solo deberia abrirse via SSH tunnel/VPN, nunca publica.
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
+      - "127.0.0.1:${MINIO_API_HOST_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
     volumes:
-      - minio-volume:/data
+      - minio-data:/data
     networks:
-      - cohorte-net
+      - internal
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -52,13 +81,16 @@ services:
   # build.context apunta a ./cohorte_test: el Jenkinsfile clona el repo Cohorte-IMSS
   # ahi antes de levantar este compose. No es codigo versionado en este repo.
   backend:
-    image: server:1.0-cohorte
+    image: ${BACKEND_IMAGE:-server:1.0-cohorte}
     build:
       context: ./cohorte_test
-    container_name: cohorte-backend
+    container_name: ${CONTAINER_PREFIX:-cohorte}-backend
     environment:
       PORT: 8080
-      DB_URL: jdbc:mysql://cohorte-database:3306/cohorte?createDatabaseIfNotExist=true&serverTimezone=UTC&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
+      # "database" es el nombre del servicio: Docker lo resuelve dentro de la red
+      # interna del propio ambiente, asi que produccion y staging apuntan cada uno
+      # a su propia base sin colisionar.
+      DB_URL: jdbc:mysql://database:3306/cohorte?createDatabaseIfNotExist=true&serverTimezone=UTC&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
       DB_USER_NAME: ${DB_USER_NAME}
       DB_PASSWORD: ${DB_PASSWORD}
       SECRET_KEY: ${SECRET_KEY}
@@ -66,21 +98,25 @@ services:
       MINIO_URL: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      MINIO_BUCKET: cohorte-docs
+      MINIO_BUCKET: ${MINIO_BUCKET:-cohorte-docs}
       MINIO_PRESIGNED_EXPIRY: 60
-      MAIL_ENABLED: "true"
+      MAIL_ENABLED: ${MAIL_ENABLED:-true}
       MAIL_USERNAME: ${MAIL_USERNAME}
       MAIL_PASSWORD: ${MAIL_PASSWORD}
       MAIL_FROM: ${MAIL_FROM}
       FRONTEND_URL: ${FRONTEND_URL}
       CORS_ORIGINS: ${FRONTEND_URL}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      # Traefik termina TLS y reenvia HTTP plano hacia el frontend, que a su vez
+      # proxia al backend. Sin esta variable Spring asume que la peticion original
+      # fue HTTP y genera URLs absolutas con el esquema equivocado.
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
     ports:
       # El frontend habla con el backend por la red interna ("backend:8080", ver nginx.conf).
       # Este puerto solo es para depuracion/Swagger desde el propio host; no debe ser publico.
-      - "127.0.0.1:8081:8080"
+      - "127.0.0.1:${BACKEND_HOST_PORT:-8081}:8080"
     networks:
-      - cohorte-net
+      - internal
     restart: unless-stopped
     depends_on:
       database:
@@ -91,47 +127,53 @@ services:
   # ── Frontend (React + nginx) ──────────────────────────────────────────────
   # build.context apunta a ./client: el Jenkinsfile clona el repo Cohorte-front
   # ahi antes de levantar este compose. No es codigo versionado en este repo.
+  #
+  # No publica puertos: Traefik lo alcanza por la red "traefik-net" y le entrega
+  # el trafico ya descifrado en el puerto 80 del contenedor. El nginx interno
+  # sirve su configuracion HTTP-only -- ver docker-entrypoint.sh del repo
+  # Cohorte-front: al no haber certificado montado, elige nginx.http.conf.
   frontend:
-    image: web:1.0-cohorte
+    image: ${FRONTEND_IMAGE:-web:1.0-cohorte}
     build:
       context: ./client
       args:
         VITE_API_URL: ${VITE_API_URL}
-    container_name: cohorte-frontend
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      # Carpeta donde Certbot deja el archivo de verificación HTTP-01 y nginx lo sirve.
-      - certbot-www:/var/www/certbot
-      # Certificados emitidos por Certbot (fullchain.pem / privkey.pem). Solo lectura: nginx
-      # nunca debe escribir aqui, solo Certbot.
-      - certbot-conf:/etc/letsencrypt:ro
+    container_name: ${CONTAINER_PREFIX:-cohorte}-frontend
     networks:
-      - cohorte-net
+      - internal
+      - traefik-net
     restart: unless-stopped
     depends_on:
       - backend
-
-  # ── Certbot (emisión y renovación de certificados Let's Encrypt) ──────────
-  # La imagen por defecto corre "certbot --help" y sale si no se le pasa comando,
-  # asi que es inofensiva con "docker compose up". Jenkins la invoca explícitamente
-  # con "docker compose run --rm certbot certonly ..." cuando falta el certificado.
-  certbot:
-    image: certbot/certbot
-    container_name: cohorte-certbot
-    volumes:
-      - certbot-www:/var/www/certbot
-      - certbot-conf:/etc/letsencrypt
+    labels:
+      - "traefik.enable=true"
+      # Red por la que Traefik debe contactar a este contenedor. Obligatorio
+      # cuando el contenedor esta en mas de una red, como es el caso.
+      - "traefik.docker.network=traefik-net"
+      # Los nombres de router/service llevan el prefijo del ambiente para que
+      # produccion y staging no se pisen dentro de la configuracion de Traefik.
+      - "traefik.http.routers.${CONTAINER_PREFIX:-cohorte}.rule=Host(`${APP_DOMAIN}`)"
+      - "traefik.http.routers.${CONTAINER_PREFIX:-cohorte}.entrypoints=websecure"
+      - "traefik.http.routers.${CONTAINER_PREFIX:-cohorte}.tls=true"
+      - "traefik.http.routers.${CONTAINER_PREFIX:-cohorte}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${CONTAINER_PREFIX:-cohorte}.loadbalancer.server.port=80"
 
 volumes:
-  cohorte-volume:
+  # Volumenes externos: sobreviven a "docker compose down" para no perder datos
+  # entre despliegues. Hay que crearlos a mano una vez por ambiente (ver README).
+  db-data:
     external: true
-  minio-volume:
+    name: ${DB_VOLUME:-cohorte-volume}
+  minio-data:
     external: true
-  certbot-www:
-  certbot-conf:
+    name: ${MINIO_VOLUME:-minio-volume}
 
 networks:
-  cohorte-net:
+  # Red privada del ambiente: aisla database/minio/backend/frontend de todo lo
+  # demas. Produccion y staging usan redes distintas, asi que no se ven entre si.
+  internal:
+    external: true
+    name: ${INTERNAL_NET:-cohorte-net}
+  # Red compartida con Traefik. Solo el frontend se conecta a ella.
+  traefik-net:
     external: true

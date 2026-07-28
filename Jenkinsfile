@@ -1,11 +1,21 @@
 pipeline {
     agent any
 
+    // El mismo pipeline despliega produccion o staging segun el parametro
+    // DEPLOY_ENV. Todo lo que difiere entre ambientes (rama, credencial del
+    // .env, nombre del proyecto de Compose, prefijo de contenedores) se resuelve
+    // en la stage 'Resolver ambiente'.
+    parameters {
+        choice(
+            name: 'DEPLOY_ENV',
+            choices: ['prod', 'staging'],
+            description: 'Ambiente a desplegar. Un webhook de GitHub usa el valor por defecto (prod).'
+        )
+    }
+
     environment {
-        COMPOSE_PROJECT = 'cohorteapp'
-        BACKEND_REPO    = 'https://github.com/MartinOM321753/Cohorte-IMSS.git'
-        FRONTEND_REPO   = 'https://github.com/MartinOM321753/Cohorte-front.git'
-        DEPLOY_BRANCH   = 'main'
+        BACKEND_REPO  = 'https://github.com/MartinOM321753/Cohorte-IMSS.git'
+        FRONTEND_REPO = 'https://github.com/MartinOM321753/Cohorte-front.git'
     }
 
     triggers {
@@ -21,22 +31,39 @@ pipeline {
             }
         }
 
-        // 2. El despliegue solo corre si la rama es main (funciona tanto en job simple
-        //    apuntado a main como en Multibranch Pipeline con varias ramas).
-        stage('Verificar rama') {
+        // 2. Traducir DEPLOY_ENV a los valores concretos del ambiente y verificar
+        //    que la rama construida sea la que le corresponde. Un push a una rama
+        //    distinta se verifica pero no despliega.
+        stage('Resolver ambiente') {
             steps {
                 script {
+                    if (params.DEPLOY_ENV == 'staging') {
+                        env.DEPLOY_BRANCH    = 'develop'
+                        env.COMPOSE_PROJECT  = 'cohorteapp-staging'
+                        env.ENV_CREDENTIAL   = 'cohorte-env-file-staging'
+                        env.CONTAINER_PREFIX = 'cohorte-staging'
+                    } else {
+                        env.DEPLOY_BRANCH    = 'main'
+                        env.COMPOSE_PROJECT  = 'cohorteapp'
+                        env.ENV_CREDENTIAL   = 'cohorte-env-file'
+                        env.CONTAINER_PREFIX = 'cohorte'
+                    }
+
                     def branch = (env.BRANCH_NAME ?: env.GIT_BRANCH ?: '').replaceFirst(/^origin\//, '')
-                    env.IS_MAIN = (branch == env.DEPLOY_BRANCH).toString()
-                    echo "Rama detectada: '${branch}' -- desplegar=${env.IS_MAIN}"
+                    env.SHOULD_DEPLOY = (branch == env.DEPLOY_BRANCH).toString()
+
+                    echo """Ambiente:   ${params.DEPLOY_ENV}
+Rama build: '${branch}'  (esperada: '${env.DEPLOY_BRANCH}')
+Proyecto:   ${env.COMPOSE_PROJECT}
+Desplegar:  ${env.SHOULD_DEPLOY}"""
                 }
             }
         }
 
-        // 3. Clonar el backend y el frontend en main, como hermanos de este repo.
+        // 3. Clonar el backend y el frontend como hermanos de este repo.
         //    docker-compose.yml usa build.context: ./cohorte_test y ./client.
         stage('Clonar repos de aplicación') {
-            when { expression { env.IS_MAIN == 'true' } }
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
             steps {
                 sh '''
                     rm -rf cohorte_test
@@ -48,35 +75,67 @@ pipeline {
         }
 
         // 4. Copiar el .env real al workspace desde una credencial de Jenkins tipo
-        //    "Secret file" (ID: cohorte-env-file). Nunca se versiona: vive solo en
-        //    el workspace de este build y Jenkins lo borra al terminar.
+        //    "Secret file". Cada ambiente tiene la suya (cohorte-env-file /
+        //    cohorte-env-file-staging). Nunca se versiona: vive solo en el
+        //    workspace de este build y Jenkins lo borra al terminar.
         stage('Preparar variables de entorno') {
-            when { expression { env.IS_MAIN == 'true' } }
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
             steps {
-                withCredentials([file(credentialsId: 'cohorte-env-file', variable: 'ENV_FILE')]) {
+                withCredentials([file(credentialsId: env.ENV_CREDENTIAL, variable: 'ENV_FILE')]) {
                     sh 'cp -f "$ENV_FILE" .env'
                 }
             }
         }
 
-        // 5. Respaldar la base de datos ANTES de tocar los contenedores existentes.
-        //    Usa el contenedor "cohorte-database" que todavía está corriendo con los
-        //    datos previos al deploy. Si el dump falla de verdad (no el caso de "el
-        //    contenedor aún no existe", que scripts/backup-db.sh trata como éxito),
-        //    esta stage aborta el pipeline antes de "docker compose down".
+        // 5. Garantizar que existan las redes y volumenes externos del ambiente.
+        //    Son "external: true" en el compose para sobrevivir a un "down", asi
+        //    que alguien tiene que crearlos; hacerlo aqui evita depender de que
+        //    se hayan creado a mano. Idempotente: si ya existen, no hace nada.
+        stage('Preparar redes y volúmenes') {
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
+            steps {
+                sh '''
+                    set -a
+                    . ./.env
+                    set +a
+
+                    docker network create traefik-net 2>/dev/null || true
+                    docker network create "${INTERNAL_NET:-cohorte-net}" 2>/dev/null || true
+                    docker volume  create "${DB_VOLUME:-cohorte-volume}" >/dev/null
+                    docker volume  create "${MINIO_VOLUME:-minio-volume}" >/dev/null
+                    echo "Redes y volúmenes listos."
+                '''
+            }
+        }
+
+        // 6. Respaldar la base de datos ANTES de tocar los contenedores existentes,
+        //    contra el contenedor que todavía corre con los datos previos al deploy.
+        //    Si el dump falla de verdad (no el caso de "el contenedor aún no existe",
+        //    que scripts/backup-db.sh trata como éxito), esta stage aborta el
+        //    pipeline antes de "docker compose down".
+        //
+        //    Staging respalda a su propio directorio y NO sube a Drive: son datos
+        //    de prueba y no deben mezclarse con los respaldos reales.
         stage('Respaldo de base de datos') {
-            when { expression { env.IS_MAIN == 'true' } }
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
             steps {
                 sh '''
                     chmod +x scripts/backup-db.sh
+
+                    if [ "$DEPLOY_ENV" = "staging" ]; then
+                        export DB_CONTAINER="${CONTAINER_PREFIX}-database"
+                        export BACKUP_DIR="$HOME/backups/cohorte-staging"
+                        export SKIP_CLOUD_UPLOAD=1
+                    fi
+
                     ./scripts/backup-db.sh
                 '''
             }
         }
 
-        // 6. Detener los servicios en ejecución
+        // 7. Detener los servicios en ejecución de ESTE ambiente
         stage('Parando servicios existentes') {
-            when { expression { env.IS_MAIN == 'true' } }
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
             steps {
                 sh '''
                     docker compose -p "$COMPOSE_PROJECT" down || true
@@ -84,9 +143,9 @@ pipeline {
             }
         }
 
-        // 7. Construir y levantar todos los servicios
+        // 8. Construir y levantar todos los servicios
         stage('Construyendo y desplegando servicios') {
-            when { expression { env.IS_MAIN == 'true' } }
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
             steps {
                 sh '''
                     docker compose -p "$COMPOSE_PROJECT" up --build -d
@@ -94,65 +153,64 @@ pipeline {
             }
         }
 
-        // 8. Verificar que los contenedores quedaron en ejecución
+        // 9. Asegurar que Traefik (proxy compartido) esté corriendo. Es un stack
+        //    aparte a proposito: sirve a produccion y staging a la vez, asi que un
+        //    "down" de cualquiera de los dos no debe tumbarlo. Idempotente.
+        //
+        //    Es OBLIGATORIO: desde que el frontend dejo de publicar 80/443, sin
+        //    Traefik no hay forma de llegar al sitio. Si la credencial falta, esta
+        //    stage falla en vez de dejar el deploy "exitoso" con el sitio caido.
+        //
+        //    El .env viene de una credencial (no del workspace) porque esta en
+        //    .gitignore: el checkout nunca lo traeria, y un workspace limpio lo
+        //    perderia.
+        stage('Asegurar Traefik en ejecución') {
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
+            steps {
+                withCredentials([file(credentialsId: 'traefik-env-file', variable: 'TRAEFIK_ENV')]) {
+                    sh '''
+                        cp -f "$TRAEFIK_ENV" traefik/.env
+                        docker compose -p traefik -f traefik/docker-compose.yml up -d
+
+                        # El proxy es el unico camino al sitio: si no quedo arriba,
+                        # el deploy no sirve de nada.
+                        sleep 5
+                        state=$(docker inspect -f '{{.State.Status}}' traefik 2>/dev/null || echo "ausente")
+                        if [ "$state" != "running" ]; then
+                            echo "ERROR: Traefik quedó en estado '$state'. El sitio no es alcanzable."
+                            docker logs traefik --tail 40 2>&1 || true
+                            exit 1
+                        fi
+                        echo "Traefik en ejecución."
+                    '''
+                }
+            }
+        }
+
+        // 10. Verificar que los contenedores quedaron en ejecución
         stage('Verificando despliegue') {
-            when { expression { env.IS_MAIN == 'true' } }
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
             steps {
                 sh '''
                     echo "Esperando 15s para que los servicios inicien..."
                     sleep 15
                     docker compose -p "$COMPOSE_PROJECT" ps
-                    docker compose -p "$COMPOSE_PROJECT" ps --filter "status=running" | grep -q "cohorte-backend" || {
-                        echo "ERROR: el backend no está en ejecución"
-                        exit 1
-                    }
-                    docker compose -p "$COMPOSE_PROJECT" ps --filter "status=running" | grep -q "cohorte-frontend" || {
-                        echo "ERROR: el frontend no está en ejecución"
-                        exit 1
-                    }
+
+                    for svc in backend frontend; do
+                        cid=$(docker compose -p "$COMPOSE_PROJECT" ps -q "$svc")
+                        if [ -z "$cid" ]; then
+                            echo "ERROR: el servicio '$svc' no existe"
+                            exit 1
+                        fi
+                        state=$(docker inspect -f '{{.State.Status}}' "$cid")
+                        if [ "$state" != "running" ]; then
+                            echo "ERROR: el servicio '$svc' está en estado '$state'"
+                            exit 1
+                        fi
+                        echo "OK: $svc en ejecución"
+                    done
+
                     echo "Despliegue verificado correctamente"
-                '''
-            }
-        }
-
-        // 9. Emitir el certificado SSL la primera vez (idempotente: si ya existe, no
-        //    hace nada). El contenedor "frontend" arranca sirviendo HTTP-only mientras
-        //    no haya certificado (ver docker-entrypoint.sh del repo Cohorte-front),
-        //    asi que el reto HTTP-01 de Let's Encrypt puede resolverse sin que el
-        //    pipeline falle.
-        stage('Emitir certificado SSL si falta') {
-            when { expression { env.IS_MAIN == 'true' } }
-            steps {
-                sh '''
-                    set -a
-                    . ./.env
-                    set +a
-                    DOMAIN="hwcs.cipps.unam.mx"
-
-                    if docker compose -p "$COMPOSE_PROJECT" exec -T frontend test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
-                        echo "Certificado ya existe para $DOMAIN, no se vuelve a emitir."
-                    else
-                        echo "No hay certificado para $DOMAIN, solicitando uno a Let's Encrypt..."
-                        docker compose -p "$COMPOSE_PROJECT" run --rm certbot certonly \
-                            --webroot --webroot-path=/var/www/certbot \
-                            -d "$DOMAIN" \
-                            --email "$CERTBOT_EMAIL" --agree-tos --no-eff-email --non-interactive
-
-                        echo "Certificado emitido. Reiniciando frontend para activar HTTPS..."
-                        docker compose -p "$COMPOSE_PROJECT" restart frontend
-                    fi
-                '''
-            }
-        }
-
-        // 10. Renovar si ya esta cerca de expirar (certbot renew no hace nada si le
-        //     quedan mas de 30 dias). Si renovo, recarga nginx sin downtime.
-        stage('Renovar certificado SSL si aplica') {
-            when { expression { env.IS_MAIN == 'true' } }
-            steps {
-                sh '''
-                    docker compose -p "$COMPOSE_PROJECT" run --rm certbot renew --quiet || true
-                    docker compose -p "$COMPOSE_PROJECT" exec -T frontend nginx -s reload || true
                 '''
             }
         }
@@ -164,8 +222,16 @@ pipeline {
         //     ejecuta este pipeline (jenkins) para que apunte siempre a la versión
         //     más reciente del script. No bloqueante: un fallo aquí no debe tumbar
         //     un deploy que ya se completó bien.
+        //
+        //     Solo produccion instala el cron: los datos de staging son de prueba
+        //     y no justifican respaldos diarios.
         stage('Instalar cron de respaldo diario') {
-            when { expression { env.IS_MAIN == 'true' } }
+            when {
+                allOf {
+                    expression { env.SHOULD_DEPLOY == 'true' }
+                    expression { params.DEPLOY_ENV == 'prod' }
+                }
+            }
             steps {
                 sh '''
                     set +e
@@ -184,10 +250,10 @@ pipeline {
     post {
         success {
             script {
-                if (env.IS_MAIN == 'true') {
-                    echo 'Despliegue completado. Frontend: http://<servidor>  Backend (solo localhost): http://127.0.0.1:8081'
+                if (env.SHOULD_DEPLOY == 'true') {
+                    echo "Despliegue de '${params.DEPLOY_ENV}' completado."
                 } else {
-                    echo 'Rama distinta de main: build verificado, sin desplegar.'
+                    echo "Rama distinta de '${env.DEPLOY_BRANCH}': build verificado, sin desplegar."
                 }
             }
         }
