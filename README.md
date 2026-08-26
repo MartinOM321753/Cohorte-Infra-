@@ -162,12 +162,15 @@ job (Pipeline → "Use a credential" o vía `git` con `credentialsId` en el clon
 El pipeline recibe un parámetro **`DEPLOY_ENV`** (`prod` | `staging`) que resuelve
 todo lo que difiere entre ambientes:
 
-| `DEPLOY_ENV` | Rama que despliega | Proyecto Compose      | Credencial del `.env`      |
+| `DEPLOY_ENV` | Rama de las apps   | Proyecto Compose      | Credencial del `.env`      |
 | ------------ | ------------------ | --------------------- | -------------------------- |
 | `prod`       | `main`             | `cohorteapp`          | `cohorte-env-file`         |
 | `staging`    | `develop`          | `cohorteapp-staging`  | `cohorte-env-file-staging` |
 
-Un build cuya rama no coincida con la esperada del ambiente se verifica pero **no
+La columna "rama de las apps" es la que se clona de `Cohorte-IMSS` y
+`Cohorte-front`. No confundirla con la rama de **este** repo: el despliegue solo
+corre si el build viene de `main` de `Cohorte-Infra` (`INFRA_BRANCH`), que es la
+única rama que tiene. Un build desde otra rama de infra se verifica pero **no
 despliega**. El webhook de GitHub usa el valor por defecto (`prod`); para
 desplegar staging usa *Build with Parameters* y elige `staging`.
 

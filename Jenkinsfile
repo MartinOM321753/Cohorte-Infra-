@@ -16,6 +16,10 @@ pipeline {
     environment {
         BACKEND_REPO  = 'https://github.com/MartinOM321753/Cohorte-IMSS.git'
         FRONTEND_REPO = 'https://github.com/MartinOM321753/Cohorte-front.git'
+        // Rama de ESTE repo (infraestructura) desde la que se permite desplegar.
+        // No tiene nada que ver con la rama de las aplicaciones: la infra vive
+        // en una sola rama y sirve a los dos ambientes.
+        INFRA_BRANCH  = 'main'
     }
 
     triggers {
@@ -32,28 +36,34 @@ pipeline {
         }
 
         // 2. Traducir DEPLOY_ENV a los valores concretos del ambiente y verificar
-        //    que la rama construida sea la que le corresponde. Un push a una rama
+        //    que el build venga de la rama de infraestructura. Un push a una rama
         //    distinta se verifica pero no despliega.
         stage('Resolver ambiente') {
             steps {
                 script {
                     if (params.DEPLOY_ENV == 'staging') {
-                        env.DEPLOY_BRANCH    = 'develop'
+                        env.APP_BRANCH       = 'develop'
                         env.COMPOSE_PROJECT  = 'cohorteapp-staging'
                         env.ENV_CREDENTIAL   = 'cohorte-env-file-staging'
                         env.CONTAINER_PREFIX = 'cohorte-staging'
                     } else {
-                        env.DEPLOY_BRANCH    = 'main'
+                        env.APP_BRANCH       = 'main'
                         env.COMPOSE_PROJECT  = 'cohorteapp'
                         env.ENV_CREDENTIAL   = 'cohorte-env-file'
                         env.CONTAINER_PREFIX = 'cohorte'
                     }
 
+                    // Lo que se comprueba es la rama de ESTE repo, no la de las
+                    // aplicaciones. Antes se comparaba contra la rama de las apps y
+                    // staging nunca desplegaba: esperaba un build de 'develop' que
+                    // en un repo con una sola rama no llega nunca. El pipeline
+                    // terminaba en verde sin haber levantado nada.
                     def branch = (env.BRANCH_NAME ?: env.GIT_BRANCH ?: '').replaceFirst(/^origin\//, '')
-                    env.SHOULD_DEPLOY = (branch == env.DEPLOY_BRANCH).toString()
+                    env.SHOULD_DEPLOY = (branch == env.INFRA_BRANCH).toString()
 
                     echo """Ambiente:   ${params.DEPLOY_ENV}
-Rama build: '${branch}'  (esperada: '${env.DEPLOY_BRANCH}')
+Rama infra: '${branch}'  (esperada: '${env.INFRA_BRANCH}')
+Rama apps:  '${env.APP_BRANCH}'
 Proyecto:   ${env.COMPOSE_PROJECT}
 Desplegar:  ${env.SHOULD_DEPLOY}"""
                 }
@@ -67,9 +77,9 @@ Desplegar:  ${env.SHOULD_DEPLOY}"""
             steps {
                 sh '''
                     rm -rf cohorte_test
-                    git clone --depth 1 --branch "$DEPLOY_BRANCH" "$BACKEND_REPO" cohorte_test
+                    git clone --depth 1 --branch "$APP_BRANCH" "$BACKEND_REPO" cohorte_test
                     rm -rf client
-                    git clone --depth 1 --branch "$DEPLOY_BRANCH" "$FRONTEND_REPO" client
+                    git clone --depth 1 --branch "$APP_BRANCH" "$FRONTEND_REPO" client
                 '''
             }
         }
@@ -253,7 +263,7 @@ Desplegar:  ${env.SHOULD_DEPLOY}"""
                 if (env.SHOULD_DEPLOY == 'true') {
                     echo "Despliegue de '${params.DEPLOY_ENV}' completado."
                 } else {
-                    echo "Rama distinta de '${env.DEPLOY_BRANCH}': build verificado, sin desplegar."
+                    echo "Build fuera de la rama '${env.INFRA_BRANCH}' del repo de infraestructura: verificado, sin desplegar."
                 }
             }
         }
