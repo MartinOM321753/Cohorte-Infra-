@@ -225,7 +225,15 @@ Desplegar:  ${env.SHOULD_DEPLOY}"""
                         # .env pueden llevar caracteres que el shell interpretaría.
                         # Compose lee el resto del .env por su cuenta, porque vive
                         # en el directorio del proyecto.
-                        vol=$(sed -n 's/^MINIO_PUBLIC_VOLUME=//p' minio-public/.env | tail -1)
+                        #
+                        # El filtro final no es adorno: la credencial se edita en
+                        # Windows, asi que el archivo llega con saltos de linea
+                        # CRLF y el valor sale con un "" pegado al final.
+                        # Compose lo tolera, pero docker no: rechaza el nombre
+                        # "minio-public-volume" y sin volumen no levanta nada.
+                        # Se deja solo el juego de caracteres que docker admite en
+                        # un nombre de volumen, que es justo lo que dice su error.
+                        vol=$(sed -n 's/^MINIO_PUBLIC_VOLUME=//p' minio-public/.env | tail -1 | tr -dc 'A-Za-z0-9_.-')
                         docker volume create "${vol:-minio-public-volume}" >/dev/null
 
                         docker compose -p minio-public -f minio-public/docker-compose.yml up -d
