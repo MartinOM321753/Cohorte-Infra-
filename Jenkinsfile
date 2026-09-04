@@ -228,11 +228,15 @@ Desplegar:  ${env.SHOULD_DEPLOY}"""
                         #
                         # El filtro final no es adorno: la credencial se edita en
                         # Windows, asi que el archivo llega con saltos de linea
-                        # CRLF y el valor sale con un "" pegado al final.
+                        # CRLF y el valor sale con un retorno de carro pegado al final.
                         # Compose lo tolera, pero docker no: rechaza el nombre
-                        # "minio-public-volume" y sin volumen no levanta nada.
+                        # ese nombre de volumen, y sin volumen no levanta nada.
                         # Se deja solo el juego de caracteres que docker admite en
                         # un nombre de volumen, que es justo lo que dice su error.
+                        #
+                        # Al editar estos comentarios: van dentro de un
+                        # string de Groovy que se entrega al shell, asi que
+                        # un CR literal aqui parte la linea y rompe el script.
                         vol=$(sed -n 's/^MINIO_PUBLIC_VOLUME=//p' minio-public/.env | tail -1 | tr -dc 'A-Za-z0-9_.-')
                         docker volume create "${vol:-minio-public-volume}" >/dev/null
 
