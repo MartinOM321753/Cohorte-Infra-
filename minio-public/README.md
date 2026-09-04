@@ -162,6 +162,47 @@ problema cuando quien lo recibe está a un país de distancia y no tienes cómo
 guiarlo. El par `.bat` + `.ps1` se comporta igual para el usuario y no cruza
 ningún filtro.
 
+### Windows 7
+
+Los equipos con Windows 7 usan una carpeta aparte, [`windows-7/`](windows-7/),
+con su propio par de `.bat`. No es capricho: casi todo el mecanismo cambia.
+
+| | Windows 8/10/11 | Windows 7 |
+| --- | --- | --- |
+| PowerShell | 5.1 | 2.0 — sin `Invoke-WebRequest`, `Expand-Archive` ni cmdlets de tareas |
+| Tarea programada | cmdlets `*-ScheduledTask` | `schtasks.exe` + definición XML |
+| rclone | última versión | **fijada en 1.63.1** |
+| WinFsp | última versión | **fijada en 1.12.22339** |
+
+Las dos versiones fijadas son el punto importante. De rclone 1.64 en adelante se
+compila con Go 1.21, que **dejó fuera a Windows 7**: el binario no arranca
+siquiera. Y 1.12.22339 es la última WinFsp que el proyecto probó en Windows 7
+SP1. Instalar "lo más nuevo" en esos equipos no da un fallo claro, da un
+ejecutable que no abre.
+
+Dos cosas más que solo pasan en Windows 7:
+
+- **TLS 1.2.** Windows 7 negocia TLS 1.0 por defecto y los servidores de descarga
+  ya no lo aceptan. El script lo fuerza, pero si el equipo no tiene .NET 4.6 ni
+  los parches al día, no hay forma. Para eso, el instalador **usa los archivos
+  que encuentre junto a él** antes de intentar descargar nada: se bajan una vez
+  desde un equipo moderno, se meten en la carpeta y el ZIP viaja completo.
+
+  ```bash
+  curl -LO https://downloads.rclone.org/v1.63.1/rclone-v1.63.1-windows-amd64.zip
+  curl -LO https://downloads.rclone.org/v1.63.1/rclone-v1.63.1-windows-386.zip
+  curl -LO https://github.com/winfsp/winfsp/releases/download/v1.12.22339/winfsp-1.12.22339.msi
+  ```
+
+  El de 32 bits solo hace falta si algún equipo lo es; el script elige solo.
+
+- **Firma SHA-2.** Si el instalador se queja de que el controlador no está
+  firmado, a ese Windows 7 le falta la KB4474419. Es la causa más común de que
+  WinFsp no instale.
+
+La carpeta incluye un `LEEME.txt` escrito para quien recibe el equipo, no para
+quien administra.
+
 ### A mano, si prefieres hacerlo paso a paso
 
 #### Instalación
