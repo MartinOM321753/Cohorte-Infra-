@@ -1,0 +1,143 @@
+# ============================================================================
+#  Almacen de instrumentos -- MinIO publico
+#
+#  Stack INDEPENDIENTE del stack de aplicacion y del de Traefik, a proposito:
+#  no lo consume ningun contenedor de CohorteApp, asi que un "docker compose
+#  down" de produccion o de staging no debe tumbarlo, ni al reves.
+#
+#  NO es el MinIO que usa el backend. Aquel (cohorte-minio) vive en el compose
+#  raiz, comparte credenciales con la aplicacion y guarda documentos del
+#  sistema. Este es solo para material publico (imagenes de instrumentos) y
+#  tiene credenciales propias. Nunca reutilizar unas en el otro.
+#
+#  ── Como se publica (sin subdominio propio) ──────────────────────────────
+#  No hay registro DNS para este servicio, asi que cuelga del host que ya
+#  existe, por PREFIJO DE RUTA. S3 direcciona en "path-style":
+#
+#      https://<host>/<bucket>/<objeto>
+#
+#  Entonces basta un router que mande a MinIO todo lo que empiece con el
+#  nombre del bucket. La URL publica de una imagen queda:
+#
+#      https://staging.hwcs.cipps.unam.mx/archivos-instrumentos/foto.jpg
+#
+#  CRITICO: el router NO debe llevar middleware StripPrefix. La firma SigV4
+#  que calcula el cliente incluye la ruta completa; si Traefik la recorta,
+#  MinIO firma sobre otra ruta y rechaza TODO con SignatureDoesNotMatch. Sin
+#  recorte, MinIO recibe /archivos-instrumentos/foto.jpg y lo lee como
+#  bucket + objeto, que es justo lo que se busca. Por eso el nombre del bucket
+#  y el prefijo de ruta son forzosamente la misma cadena.
+#
+#  ── El dia que exista el subdominio ──────────────────────────────────────
+#  Path-style pone el bucket en la ruta pase lo que pase, asi que la URL solo
+#  cambia de origen y la regla de abajo sirve igual. Basta cambiar
+#  MINIO_PUBLIC_HOST en el .env y volver a levantar. Si se quiere que las
+#  ligas viejas sigan sirviendo, se duplica el router con el host anterior:
+#  el cambio es aditivo, nada se rompe. Ver minio-public/README.md.
+#
+#  Levantar:
+#     docker compose -p minio-public -f minio-public/docker-compose.yml up -d
+# ============================================================================
+
+services:
+
+  # ── Servidor de objetos ───────────────────────────────────────────────────
+  minio-public:
+    # Misma version que el MinIO de la aplicacion, y a proposito: releases
+    # comunitarios posteriores recortaron el explorador de archivos de la
+    # consola web. Antes de subirla hay que abrir la consola de la version
+    # candidata y confirmar que el explorador sigue ahi.
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    container_name: minio-public
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_PUBLIC_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PUBLIC_ROOT_PASSWORD}
+      # No se fija MINIO_SERVER_URL: hoy las URLs son publicas y sin firmar, y
+      # esa variable solo importa para generar URLs firmadas. Si algun dia hacen
+      # falta, ver la seccion correspondiente del README de este directorio.
+
+    ports:
+      # Solo accesibles desde el propio servidor (via SSH tunnel). 9000-9003 ya
+      # estan tomados por el MinIO de produccion y el de staging.
+      #   9004 -> API S3, para el script de respaldo y diagnostico local.
+      #   9005 -> consola web. NO se publica a internet: la subida de archivos
+      #           se hace desde la unidad de red (ver README), y la consola es
+      #           solo para administrar usuarios y revisar el contenido.
+      - "127.0.0.1:${MINIO_PUBLIC_API_PORT:-9004}:9000"
+      - "127.0.0.1:${MINIO_PUBLIC_CONSOLE_PORT:-9005}:9001"
+
+    volumes:
+      - data:/data
+
+    networks:
+      # Unica red: no necesita la red interna de ningun ambiente porque ningun
+      # contenedor de la aplicacion habla con el.
+      - traefik-net
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-net"
+      # La regla se arma con las mismas variables que definen el bucket, para
+      # que host y prefijo no puedan quedar desincronizados.
+      - "traefik.http.routers.minio-public.rule=Host(`${MINIO_PUBLIC_HOST}`) && PathPrefix(`/${MINIO_PUBLIC_BUCKET}`)"
+      - "traefik.http.routers.minio-public.entrypoints=websecure"
+      - "traefik.http.routers.minio-public.tls=true"
+      - "traefik.http.routers.minio-public.tls.certresolver=letsencrypt"
+      # Traefik prioriza por longitud de regla, asi que esta ya le ganaria al
+      # router del frontend (que solo hace match por Host). Se fija explicito
+      # para que la precedencia sea intencional y no un efecto secundario.
+      - "traefik.http.routers.minio-public.priority=100"
+      - "traefik.http.services.minio-public.loadbalancer.server.port=9000"
+
+  # ── Configuracion inicial del bucket (contenedor de un solo uso) ──────────
+  # Corre en cada "up", es idempotente y no reinicia. Deja el bucket creado,
+  # versionado, publico de solo lectura, con cuota y con el usuario de subida
+  # dado de alta. Que falle no tumba a MinIO: revisar con
+  #     docker logs minio-public-init
+  init:
+    # Sin fijar version a proposito: es un contenedor efimero y "mc" cambio la
+    # sintaxis de varios comandos entre releases. El script contempla las dos
+    # variantes conocidas. Si algun dia conviene fijarla, primero verificar que
+    # el tag exista y que init-bucket.sh corra limpio contra el.
+    image: minio/mc:latest
+    container_name: minio-public-init
+    depends_on:
+      minio-public:
+        condition: service_healthy
+    environment:
+      MINIO_PUBLIC_ROOT_USER: ${MINIO_PUBLIC_ROOT_USER}
+      MINIO_PUBLIC_ROOT_PASSWORD: ${MINIO_PUBLIC_ROOT_PASSWORD}
+      MINIO_PUBLIC_BUCKET: ${MINIO_PUBLIC_BUCKET}
+      MINIO_PUBLIC_QUOTA: ${MINIO_PUBLIC_QUOTA:-50gb}
+      MINIO_PUBLIC_NONCURRENT_DAYS: ${MINIO_PUBLIC_NONCURRENT_DAYS:-30}
+      MINIO_PUBLIC_UPLOADER_USER: ${MINIO_PUBLIC_UPLOADER_USER}
+      MINIO_PUBLIC_UPLOADER_PASSWORD: ${MINIO_PUBLIC_UPLOADER_PASSWORD}
+      MINIO_PUBLIC_HOST: ${MINIO_PUBLIC_HOST}
+    volumes:
+      - ./init-bucket.sh:/init-bucket.sh:ro
+    entrypoint: ["/bin/sh", "/init-bucket.sh"]
+    networks:
+      - traefik-net
+    restart: "no"
+
+volumes:
+  # Externo: sobrevive a "docker compose down" igual que los volumenes de la
+  # aplicacion. El pipeline lo crea si falta.
+  data:
+    external: true
+    name: ${MINIO_PUBLIC_VOLUME:-minio-public-volume}
+
+networks:
+  traefik-net:
+    external: true

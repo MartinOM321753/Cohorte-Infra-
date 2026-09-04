@@ -197,6 +197,52 @@ Desplegar:  ${env.SHOULD_DEPLOY}"""
             }
         }
 
+        // 9b. Asegurar el almacén de instrumentos (MinIO público). Igual que
+        //     Traefik: stack independiente, idempotente, con su propia credencial.
+        //     Corre en los dos ambientes porque el servicio es uno solo y no
+        //     tiene gemelo de staging: da igual qué deploy lo levante.
+        //
+        //     NO es bloqueante, a diferencia de Traefik: sin el proxy el sitio
+        //     es inalcanzable, pero que el repositorio de imágenes falle no
+        //     justifica marcar en rojo un despliegue de la aplicación que ya
+        //     salió bien. El fallo se reporta con los logs a la vista.
+        stage('Asegurar almacén de instrumentos') {
+            when { expression { env.SHOULD_DEPLOY == 'true' } }
+            steps {
+                withCredentials([file(credentialsId: 'minio-public-env-file', variable: 'MINIO_PUBLIC_ENV')]) {
+                    sh '''
+                        set +e
+                        cp -f "$MINIO_PUBLIC_ENV" minio-public/.env
+
+                        # Se extrae solo el nombre del volumen en vez de hacer
+                        # "source" del archivo completo: las contraseñas de este
+                        # .env pueden llevar caracteres que el shell interpretaría.
+                        # Compose lee el resto del .env por su cuenta, porque vive
+                        # en el directorio del proyecto.
+                        vol=$(sed -n 's/^MINIO_PUBLIC_VOLUME=//p' minio-public/.env | tail -1)
+                        docker volume create "${vol:-minio-public-volume}" >/dev/null
+
+                        docker compose -p minio-public -f minio-public/docker-compose.yml up -d
+
+                        sleep 5
+                        state=$(docker inspect -f '{{.State.Status}}' minio-public 2>/dev/null || echo "ausente")
+                        if [ "$state" != "running" ]; then
+                            echo "ADVERTENCIA: minio-public quedó en estado '$state'. El almacén de instrumentos no está disponible."
+                            docker logs minio-public --tail 40 2>&1 || true
+                            exit 0
+                        fi
+
+                        # El contenedor de configuración inicial es de un solo uso y
+                        # termina enseguida: sus logs son el único lugar donde se ve
+                        # si el bucket quedó bien configurado.
+                        echo "=== Configuración inicial del bucket ==="
+                        docker logs minio-public-init --tail 30 2>&1 || true
+                        exit 0
+                    '''
+                }
+            }
+        }
+
         // 10. Verificar que los contenedores quedaron en ejecución
         stage('Verificando despliegue') {
             when { expression { env.SHOULD_DEPLOY == 'true' } }
@@ -245,12 +291,18 @@ Desplegar:  ${env.SHOULD_DEPLOY}"""
             steps {
                 sh '''
                     set +e
-                    mkdir -p "$HOME/cohorte-infra-scripts"
+                    mkdir -p "$HOME/cohorte-infra-scripts" "$HOME/backups/cohorte"
                     cp -f scripts/backup-db.sh "$HOME/cohorte-infra-scripts/backup-db.sh"
-                    chmod +x "$HOME/cohorte-infra-scripts/backup-db.sh"
-                    CRON_LINE="1 0 * * * $HOME/cohorte-infra-scripts/backup-db.sh >> $HOME/backups/cohorte/backup.log 2>&1"
-                    ( crontab -l 2>/dev/null | grep -vF "backup-db.sh" ; echo "$CRON_LINE" ) | crontab -
-                    echo "Cron de respaldo diario instalado/actualizado."
+                    cp -f scripts/backup-bucket.sh "$HOME/cohorte-infra-scripts/backup-bucket.sh"
+                    chmod +x "$HOME/cohorte-infra-scripts/backup-db.sh" "$HOME/cohorte-infra-scripts/backup-bucket.sh"
+
+                    DB_LINE="1 0 * * * $HOME/cohorte-infra-scripts/backup-db.sh >> $HOME/backups/cohorte/backup.log 2>&1"
+                    # 20 minutos después del dump, para no competir por disco y red
+                    # con el respaldo de la base.
+                    BUCKET_LINE="20 0 * * * $HOME/cohorte-infra-scripts/backup-bucket.sh >> $HOME/backups/cohorte/backup-bucket.log 2>&1"
+
+                    ( crontab -l 2>/dev/null | grep -vF "backup-db.sh" | grep -vF "backup-bucket.sh" ; echo "$DB_LINE" ; echo "$BUCKET_LINE" ) | crontab -
+                    echo "Crons de respaldo diario instalados/actualizados."
                     exit 0
                 '''
             }

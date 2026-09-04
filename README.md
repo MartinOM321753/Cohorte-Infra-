@@ -23,15 +23,20 @@ Internet (80/443)
   ┌─────────┐   stack "traefik"  ·  traefik/docker-compose.yml
   │ Traefik │   TLS automático (Let's Encrypt)
   └────┬────┘
-       │  enruta por Host header
-  ┌────┴──────────────────┐
-  ▼                       ▼
-hwcs.cipps.unam.mx    staging.hwcs.cipps.unam.mx
-stack "cohorteapp"    stack "cohorteapp-staging"
-cohorte-net           cohorte-staging-net
-cohorte-volume        cohorte-staging-volume
+       │  enruta por Host header (y, para un caso, también por ruta)
+  ┌────┴──────────────────┬────────────────────────────────┐
+  ▼                       ▼                                ▼
+hwcs.cipps.unam.mx    staging.hwcs.cipps.unam.mx      staging.hwcs.cipps.unam.mx
+                                                      /archivos-instrumentos
+stack "cohorteapp"    stack "cohorteapp-staging"      stack "minio-public"
+cohorte-net           cohorte-staging-net             (solo traefik-net)
+cohorte-volume        cohorte-staging-volume          minio-public-volume
 minio-volume          minio-staging-volume
 ```
+
+El tercero es el **almacén de instrumentos**: un MinIO independiente, ajeno a la
+aplicación, que cuelga del host de staging por prefijo de ruta porque no hay
+subdominio propio disponible. Ver [`minio-public/README.md`](minio-public/README.md).
 
 `docker-compose.yml` es **el mismo archivo para ambos ambientes**. Lo que cambia
 son variables del `.env`; los valores por defecto son los de producción, así que
@@ -121,6 +126,7 @@ Una credencial tipo **Secret file** por ambiente:
 | `cohorte-env-file`          | `.env` real de producción       | producción      |
 | `cohorte-env-file-staging`  | `.env` real de staging          | staging         |
 | `traefik-env-file`          | `traefik/.env` real (ACME_EMAIL)| ambos ambientes |
+| `minio-public-env-file`     | `minio-public/.env` real        | ambos ambientes |
 
 La de Traefik es **obligatoria**: desde que el frontend dejó de publicar 80/443,
 sin el proxy no hay forma de llegar al sitio. Si falta, el pipeline falla en esa
@@ -205,12 +211,15 @@ Si quieres que un push al backend o al frontend también dispare el deploy
 7. `docker compose down` (libera contenedores; los volúmenes externos persisten).
 8. `docker compose up --build -d`.
 9. **Asegura que Traefik esté corriendo** (nunca lo baja: es compartido).
-10. Verifica que los servicios `backend` y `frontend` del ambiente queden en
+10. **Asegura el almacén de instrumentos** (`minio-public`), también compartido.
+    A diferencia de Traefik no es bloqueante: que falle no invalida un deploy de
+    la aplicación que ya salió bien.
+11. Verifica que los servicios `backend` y `frontend` del ambiente queden en
     estado `running`.
-11. **Instala/actualiza el cron de respaldo diario** (12:01am) en el servidor,
-    apuntando siempre a la última versión de `scripts/backup-db.sh`. Solo en
-    producción.
-12. Si algo falla, imprime los últimos logs del backend.
+12. **Instala/actualiza los crones de respaldo diario** en el servidor (base de
+    datos 12:01am, bucket de instrumentos 12:20am), apuntando siempre a la última
+    versión de los scripts. Solo en producción.
+13. Si algo falla, imprime los últimos logs del backend.
 
 Ya no hay etapas de Certbot: los certificados los gestiona Traefik.
 
@@ -283,6 +292,31 @@ certificado).
 El primer arranque crea el esquema desde cero (Hibernate) con roles, institución
 raíz, usuario `admin` y permisos. Para poblar los catálogos, ver el script de
 carga de catálogos que se usó en producción.
+
+## Almacén de instrumentos (MinIO público)
+
+Stack aparte, en [`minio-public/`](minio-public/), para las imágenes y documentos
+de instrumentos. No lo consume ningún contenedor de la aplicación: tiene sus
+propias credenciales, su volumen y su respaldo, y un `down` de cualquier ambiente
+no lo afecta.
+
+- **URL pública de un archivo:**
+  `https://staging.hwcs.cipps.unam.mx/archivos-instrumentos/<objeto>`
+- **Acceso:** lectura anónima por URL; para subir hace falta credencial. En cada
+  PC autorizada se monta como unidad de red `S:` con rclone + WinFsp.
+- **Consola web:** solo por túnel SSH (`127.0.0.1:9005`), nunca pública.
+- **Respaldo:** versionado del bucket + copia diaria a Drive
+  (`scripts/backup-bucket.sh`, 12:20am).
+
+Cuelga del host de staging por **prefijo de ruta** porque hoy no hay subdominio
+propio. El día que exista, se cambia una variable del `.env` y las ligas viejas
+pueden seguir sirviendo: el cambio es aditivo. Toda la operación — alta de
+usuarios, montaje de la unidad, corte al subdominio — está en
+[`minio-public/README.md`](minio-public/README.md).
+
+> Nada sensible en ese bucket: todo lo que entre es descargable por cualquiera que
+> conozca la URL. Es para fotos de instrumentos y material de difusión, no para
+> datos de pacientes.
 
 ## Respaldo de base de datos
 
