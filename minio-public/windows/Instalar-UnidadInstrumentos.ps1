@@ -42,7 +42,12 @@ param(
     [ValidatePattern('^[D-Zd-z]$')]
     [string] $Letra    = 'S',
 
-    [switch] $Desinstalar
+    [switch] $Desinstalar,
+
+    # Al desinstalar se borra tambien la credencial guardada en este equipo.
+    # Este interruptor la conserva, para el caso de quitar la unidad un rato y
+    # volver a ponerla sin tener que pedir la llave otra vez.
+    [switch] $ConservarCredenciales
 )
 
 $ErrorActionPreference = 'Stop'
@@ -99,9 +104,30 @@ if ($Desinstalar) {
         Bien "Montaje detenido (PID $($p.ProcessId))."
     }
 
+    # Borrar la credencial es la mitad importante de desinstalar. Quitar la
+    # unidad solo la saca de la vista: mientras el remoto siga configurado,
+    # cualquiera con esta sesion de Windows conserva permiso de ESCRITURA sobre
+    # el bucket, que es exactamente lo que no se quiere al entregar un equipo.
+    if ($ConservarCredenciales) {
+        Aviso 'Se conserva la credencial guardada en este equipo (-ConservarCredenciales).'
+    } else {
+        $rcl = Buscar-Rclone
+        if ($rcl) {
+            & $rcl config delete $Remoto 2>$null | Out-Null
+            Bien 'Credencial borrada de este equipo.'
+        } else {
+            Aviso 'No se encontro rclone; revisa a mano que no quede la credencial guardada.'
+        }
+    }
+
     Escribir ''
     Escribir 'La unidad ya no se montara al iniciar sesion.'
     Escribir 'Los archivos siguen en el servidor: esto solo quita el acceso local.'
+    Escribir ''
+    Escribir 'OJO: borrar la credencial de aqui no la anula en el servidor. Si la'
+    Escribir 'persona la copio, le sigue sirviendo desde otra maquina. Para'
+    Escribir 'anularla de verdad hay que darla de baja en el servidor (ver el'
+    Escribir 'README del almacen, "Dar de alta a mas personas").'
     Escribir ''
     Escribir 'WinFsp y rclone se dejan instalados. Si quieres quitarlos:'
     Escribir '  Configuracion > Aplicaciones > WinFsp > Desinstalar'

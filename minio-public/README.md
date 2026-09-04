@@ -132,9 +132,17 @@ una sin afectar a las demás. Si prefieres automatizarlo del todo:
 ```
 
 Para quitarlo hay un segundo archivo, *Desinstalar unidad de instrumentos.bat*:
-elimina la tarea y detiene el montaje, y no toca nada del servidor — los
-archivos siguen ahí. WinFsp y rclone se dejan instalados por si otra unidad
-depende de ellos.
+elimina la tarea, detiene el montaje y **borra la credencial guardada en ese
+equipo**. No toca nada del servidor — los archivos siguen ahí — y deja WinFsp y
+rclone instalados por si otra unidad depende de ellos. Con
+`-ConservarCredenciales` se salta ese borrado, para quitar la unidad un rato sin
+tener que volver a pedir la llave.
+
+> Borrar la credencial del equipo **no la anula en el servidor**. Si la persona
+> la copió, le sigue sirviendo desde otra máquina. Cuando alguien deja el
+> proyecto, lo que de verdad corta el acceso es darla de baja en el servidor con
+> `mc admin user remove` (ver *Dar de alta a más personas*). El desinstalador
+> limpia el equipo; la baja del usuario es la que revoca.
 
 Otras opciones del script: `-Letra U` si la S está ocupada, y `-Endpoint` /
 `-Bucket` si algún día cambia el dominio.
