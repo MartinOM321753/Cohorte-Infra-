@@ -1,4 +1,4 @@
-<#
+﻿<#
     Instalador de la unidad de red del almacen de instrumentos.
 
     Deja el equipo con una unidad (S: por defecto) que el Explorador trata como
@@ -220,15 +220,32 @@ if ($rclone) {
 # ── 4. Credenciales ──────────────────────────────────────────────────────────
 Paso 'Credenciales de acceso'
 
+# Si el remoto ya esta configurado y responde, no se vuelve a pedir nada. Esto
+# importa porque la razon mas comun para re-ejecutar el instalador es reparar
+# un montaje que desaparecio, y en ese caso obligar a teclear otra vez la
+# contrasena solo consigue que la persona no lo intente.
+$yaConfigurado = $false
 if (-not $AccessKey) {
+    $remotos = & $rclone listremotes 2>$null
+    if ($LASTEXITCODE -eq 0 -and ($remotos -contains "${Remoto}:")) {
+        & $rclone lsd "${Remoto}:$Bucket" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $yaConfigurado = $true }
+    }
+}
+
+if ($yaConfigurado) {
+    Bien 'Este equipo ya estaba configurado y el servidor responde; se conservan las credenciales.'
+}
+
+if (-not $yaConfigurado -and -not $AccessKey) {
     Escribir '   Son las que te dieron para este equipo (no son las de tu correo'
     Escribir '   ni las del sistema Cohorte).'
     Write-Host ''
     $AccessKey = Read-Host '   Usuario de subida'
 }
-if (-not $AccessKey) { Salir-ConError 'Sin usuario no se puede continuar.' }
+if (-not $yaConfigurado -and -not $AccessKey) { Salir-ConError 'Sin usuario no se puede continuar.' }
 
-if (-not $SecretKey) {
+if (-not $yaConfigurado -and -not $SecretKey) {
     $segura = Read-Host '   Contrasena' -AsSecureString
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($segura)
     try {
@@ -237,9 +254,10 @@ if (-not $SecretKey) {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     }
 }
-if (-not $SecretKey) { Salir-ConError 'Sin contrasena no se puede continuar.' }
+if (-not $yaConfigurado -and -not $SecretKey) { Salir-ConError 'Sin contrasena no se puede continuar.' }
 
 # ── 5. Configurar el remoto ──────────────────────────────────────────────────
+if (-not $yaConfigurado) {
 Paso 'Guardando la configuracion de rclone'
 
 # Se usa el propio rclone en vez de escribir el .conf a mano: asi respeta
@@ -263,6 +281,7 @@ $argumentos = @(
 & $rclone @argumentos | Out-Null
 if ($LASTEXITCODE -ne 0) { Salir-ConError 'rclone no pudo guardar la configuracion.' }
 Bien 'Configuracion guardada.'
+}
 
 # ── 6. Probar la conexion ANTES de montar ────────────────────────────────────
 # Separar esta prueba del montaje es lo que permite distinguir "la contrasena

@@ -131,8 +131,17 @@ una sin afectar a las demás. Si prefieres automatizarlo del todo:
 .\Instalar-UnidadInstrumentos.ps1 -AccessKey laura-pc -SecretKey "<contraseña>"
 ```
 
-Otras opciones: `-Letra U` si la S está ocupada, y `-Desinstalar` para quitar la
-tarea y el montaje (no borra nada del servidor).
+Para quitarlo hay un segundo archivo, *Desinstalar unidad de instrumentos.bat*:
+elimina la tarea y detiene el montaje, y no toca nada del servidor — los
+archivos siguen ahí. WinFsp y rclone se dejan instalados por si otra unidad
+depende de ellos.
+
+Otras opciones del script: `-Letra U` si la S está ocupada, y `-Endpoint` /
+`-Bucket` si algún día cambia el dominio.
+
+Re-ejecutar el instalador es la forma de reparar un montaje que desapareció: si
+el equipo ya estaba configurado y el servidor responde, conserva las
+credenciales y no vuelve a pedir nada.
 
 No es un `.exe` a propósito. Un ejecutable sin firma digital hace que SmartScreen
 lo bloquee con la pantalla de *"Windows protegió tu PC"*, que es justo el
