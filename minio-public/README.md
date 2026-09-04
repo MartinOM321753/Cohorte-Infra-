@@ -115,7 +115,34 @@ mc admin user remove pub laura-pc
 Convierte el bucket en una unidad `S:` que el Explorador trata como una carpeta
 más. Requiere permisos de administrador **una sola vez** en cada equipo.
 
-### Instalación
+### La vía normal: el instalador
+
+Para equipos ajenos —y sobre todo remotos— usa [`windows/`](windows/): se manda
+la carpeta comprimida, la persona hace doble clic en
+*Instalar unidad de instrumentos.bat* y queda todo hecho. El script instala
+WinFsp y rclone si faltan, guarda la configuración, comprueba la conexión antes
+de tocar nada más, registra la tarea de inicio de sesión y monta la unidad.
+
+Las credenciales **no** viajan dentro del archivo: el instalador las pide al
+ejecutarse. Manda a cada persona las suyas por otro canal, para poder revocar a
+una sin afectar a las demás. Si prefieres automatizarlo del todo:
+
+```powershell
+.\Instalar-UnidadInstrumentos.ps1 -AccessKey laura-pc -SecretKey "<contraseña>"
+```
+
+Otras opciones: `-Letra U` si la S está ocupada, y `-Desinstalar` para quitar la
+tarea y el montaje (no borra nada del servidor).
+
+No es un `.exe` a propósito. Un ejecutable sin firma digital hace que SmartScreen
+lo bloquee con la pantalla de *"Windows protegió tu PC"*, que es justo el
+problema cuando quien lo recibe está a un país de distancia y no tienes cómo
+guiarlo. El par `.bat` + `.ps1` se comporta igual para el usuario y no cruza
+ningún filtro.
+
+### A mano, si prefieres hacerlo paso a paso
+
+#### Instalación
 
 1. Instalar [WinFsp](https://winfsp.dev) — el driver que permite a Windows montar
    sistemas de archivos que no son discos reales (es lo mismo que usan las
@@ -123,7 +150,7 @@ más. Requiere permisos de administrador **una sola vez** en cada equipo.
 2. Instalar [rclone](https://rclone.org/downloads/) y dejar el ejecutable en una
    ruta fija, por ejemplo `C:\rclone\rclone.exe`.
 
-### Configuración del remoto
+#### Configuración del remoto
 
 Ejecutar `rclone config` y crear un remoto nuevo con estos valores:
 
@@ -150,7 +177,7 @@ no_check_bucket = true
 > nuestro prefijo y se la queda el frontend. Con el bucket fijado en la ruta,
 > todas las peticiones quedan bajo `/archivos-instrumentos` y el router las atrapa.
 
-### Montaje
+#### Montaje
 
 ```bash
 rclone mount instrumentos:archivos-instrumentos S: --network-mode --vfs-cache-mode full
@@ -163,9 +190,13 @@ rclone mount instrumentos:archivos-instrumentos S: --network-mode --vfs-cache-mo
   normalidad.
 
 Para que aparezca sola al encender: **Programador de tareas** → nueva tarea →
-disparador *Al iniciar sesión* → acción: ese mismo comando, marcando *Ejecutar
-tanto si el usuario inició sesión como si no* solo si se quiere que también viva
-sin sesión abierta.
+disparador *Al iniciar sesión* → acción: ese mismo comando.
+
+**No** marques *"Ejecutar tanto si el usuario inició sesión como si no"*. Una
+unidad montada pertenece a la sesión de Windows: con esa opción la tarea corre
+fuera de la sesión, el proceso vive pero la unidad nunca aparece en el
+Explorador. Conviene también quitarle el límite de ejecución —por defecto
+Windows mata las tareas a los 3 días, y aquí el proceso *es* la unidad.
 
 ### Lo que hay que saber antes de repartirla
 

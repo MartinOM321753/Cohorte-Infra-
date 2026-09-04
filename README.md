@@ -303,7 +303,9 @@ no lo afecta.
 - **URL pública de un archivo:**
   `https://staging.hwcs.cipps.unam.mx/archivos-instrumentos/<objeto>`
 - **Acceso:** lectura anónima por URL; para subir hace falta credencial. En cada
-  PC autorizada se monta como unidad de red `S:` con rclone + WinFsp.
+  PC autorizada se monta como unidad de red `S:` con rclone + WinFsp — hay un
+  instalador de doble clic en [`minio-public/windows/`](minio-public/windows/)
+  para los equipos remotos.
 - **Consola web:** solo por túnel SSH (`127.0.0.1:9005`), nunca pública.
 - **Respaldo:** versionado del bucket + copia diaria a Drive
   (`scripts/backup-bucket.sh`, 12:20am).
