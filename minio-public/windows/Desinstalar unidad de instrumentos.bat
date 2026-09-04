@@ -8,8 +8,8 @@ rem
 rem  NO borra nada del servidor. Los archivos siguen ahi y se siguen viendo por
 rem  su direccion publica; esto solo quita el acceso desde este equipo.
 rem
-rem  WinFsp y rclone se dejan instalados, por si hay otras unidades que dependan
-rem  de ellos. Para quitarlos: Configuracion > Aplicaciones.
+rem  Al final pregunta si quieres desinstalar tambien WinFsp y rclone. Por
+rem  defecto no los toca: otras herramientas pueden depender de ellos.
 rem ============================================================================
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Instalar-UnidadInstrumentos.ps1" -Desinstalar

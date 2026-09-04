@@ -54,8 +54,9 @@ $ErrorActionPreference = 'Stop'
 $Tarea = 'Unidad almacen de instrumentos'
 $DirRclone = Join-Path $env:LOCALAPPDATA 'rclone'
 $LogMontaje = Join-Path $DirRclone 'mount-instrumentos.log'
+$script:Rclone = $null
 
-function Escribir($Texto, $Color = 'Gray') { Write-Host $Texto -ForegroundColor $Color }
+function Escribir($Texto) { Write-Host $Texto -ForegroundColor Gray }
 function Paso($Texto)  { Write-Host ''; Write-Host "== $Texto" -ForegroundColor Cyan }
 function Bien($Texto)  { Write-Host "   OK  $Texto" -ForegroundColor Green }
 function Aviso($Texto) { Write-Host "   !   $Texto" -ForegroundColor Yellow }
@@ -68,7 +69,7 @@ function Salir-ConError($Texto) {
     exit 1
 }
 
-# ── Localizar rclone ─────────────────────────────────────────────────────────
+# -- Localizar rclone ---------------------------------------------------------
 # Puede estar en el PATH (instalado con winget) o en la carpeta propia que crea
 # este script. Se devuelve la ruta completa porque la tarea programada no hereda
 # el PATH del usuario de forma fiable.
@@ -80,9 +81,50 @@ function Buscar-Rclone {
     return $null
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -- Llamar a rclone sin que un aviso suyo tumbe el script --------------------
+# PowerShell 5.1 convierte CADA linea que un .exe escribe en stderr en un error
+# de PowerShell; con ErrorActionPreference='Stop' eso aborta el script aunque el
+# programa haya terminado perfectamente. Y rclone usa stderr para avisos de
+# rutina: en un equipo recien instalado lo primero que dice es que todavia no
+# hay archivo de configuracion. Sin esta funcion el instalador moria justo ahi,
+# un paso antes de pedir las credenciales, y el usuario no llegaba a escribirlas.
+function Invocar-Rclone {
+    param([string[]] $Argumentos)
+
+    $previo = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $salida = & $script:Rclone @Argumentos --log-level ERROR 2>&1
+        $codigo = $LASTEXITCODE
+
+        # Las lineas de stderr llegan envueltas en ErrorRecord y "Out-String"
+        # les pega encima el numero de linea y el rastro de PowerShell. Se
+        # desenvuelven para que un fallo se lea como lo escribio rclone y no
+        # como un volcado del script.
+        $lineas = foreach ($linea in $salida) {
+            if ($linea -is [System.Management.Automation.ErrorRecord]) { $linea.Exception.Message }
+            else { [string]$linea }
+        }
+
+        return [pscustomobject]@{
+            Texto  = (($lineas -join [Environment]::NewLine)).Trim()
+            Codigo = $codigo
+        }
+    } finally {
+        $ErrorActionPreference = $previo
+    }
+}
+
+# -- Preguntar si/no ----------------------------------------------------------
+function Preguntar($Texto) {
+    Write-Host ''
+    $r = Read-Host "   $Texto [s/N]"
+    return ($r -match '^[sSyY]')
+}
+
+# -----------------------------------------------------------------------------
 #  Desinstalacion
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 if ($Desinstalar) {
     Paso 'Quitando la unidad'
 
@@ -101,44 +143,63 @@ if ($Desinstalar) {
                 Where-Object { $_.CommandLine -like "*${Remoto}:*" }
     foreach ($p in $procesos) {
         Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
-        Bien "Montaje detenido (PID $($p.ProcessId))."
+        Bien 'Montaje detenido.'
     }
 
     # Borrar la credencial es la mitad importante de desinstalar. Quitar la
     # unidad solo la saca de la vista: mientras el remoto siga configurado,
     # cualquiera con esta sesion de Windows conserva permiso de ESCRITURA sobre
     # el bucket, que es exactamente lo que no se quiere al entregar un equipo.
+    $script:Rclone = Buscar-Rclone
     if ($ConservarCredenciales) {
-        Aviso 'Se conserva la credencial guardada en este equipo (-ConservarCredenciales).'
-    } else {
-        $rcl = Buscar-Rclone
-        if ($rcl) {
-            & $rcl config delete $Remoto 2>$null | Out-Null
-            Bien 'Credencial borrada de este equipo.'
+        Aviso 'Se conserva la credencial guardada (-ConservarCredenciales).'
+    } elseif ($script:Rclone) {
+        Invocar-Rclone @('config', 'delete', $Remoto) | Out-Null
+        Bien 'Credencial borrada de este equipo.'
+    }
+
+    # -- Programas de apoyo, opcional -----------------------------------------
+    # Se pregunta en vez de quitarlos sin avisar: otras herramientas pueden
+    # depender de WinFsp, y quitarlo con el Explorador abierto puede dejarlo
+    # colgado hasta reiniciar.
+    Write-Host ''
+    Escribir '  WinFsp y rclone se quedan instalados salvo que pidas lo contrario.'
+    if (Preguntar 'Desinstalarlos tambien?') {
+
+        if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
+            Write-Host ''
+            Aviso 'Al quitar WinFsp el Explorador puede quedarse colgado un momento.'
+            Aviso 'Si el escritorio desaparece, reinicia el equipo y vuelve solo.'
+
+            Paso 'Desinstalando rclone'
+            $r = Start-Process winget.exe -ArgumentList 'uninstall','--id','Rclone.Rclone','--silent','--disable-interactivity','--accept-source-agreements' -Wait -PassThru -NoNewWindow
+            if ($r.ExitCode -eq 0) { Bien 'Desinstalado.' } else { Aviso "No se pudo (codigo $($r.ExitCode)). Quitalo desde Configuracion > Aplicaciones." }
+
+            # La carpeta propia solo existe si rclone se instalo desde aqui.
+            if (Test-Path $DirRclone) { Remove-Item $DirRclone -Recurse -Force -ErrorAction SilentlyContinue }
+
+            Paso 'Desinstalando WinFsp'
+            Escribir '   Windows va a pedir permiso de administrador...'
+            $w = Start-Process winget.exe -ArgumentList 'uninstall','--id','WinFsp.WinFsp','--silent','--disable-interactivity','--accept-source-agreements' -Verb RunAs -Wait -PassThru
+            if ($w.ExitCode -eq 0) { Bien 'Desinstalado.' } else { Aviso "No se pudo (codigo $($w.ExitCode)). Quitalo desde Configuracion > Aplicaciones." }
+
         } else {
-            Aviso 'No se encontro rclone; revisa a mano que no quede la credencial guardada.'
+            Aviso 'Este equipo no tiene winget.'
+            Escribir '   Quitalos a mano desde Configuracion > Aplicaciones.'
         }
     }
 
-    Escribir ''
-    Escribir 'La unidad ya no se montara al iniciar sesion.'
-    Escribir 'Los archivos siguen en el servidor: esto solo quita el acceso local.'
-    Escribir ''
-    Escribir 'OJO: borrar la credencial de aqui no la anula en el servidor. Si la'
-    Escribir 'persona la copio, le sigue sirviendo desde otra maquina. Para'
-    Escribir 'anularla de verdad hay que darla de baja en el servidor (ver el'
-    Escribir 'README del almacen, "Dar de alta a mas personas").'
-    Escribir ''
-    Escribir 'WinFsp y rclone se dejan instalados. Si quieres quitarlos:'
-    Escribir '  Configuracion > Aplicaciones > WinFsp > Desinstalar'
-    Escribir ''
+    Write-Host ''
+    Write-Host '  Listo. La unidad ya no se montara al iniciar sesion.' -ForegroundColor Green
+    Escribir '  Los archivos siguen en el servidor.'
+    Write-Host ''
     Read-Host 'Pulsa Enter para cerrar'
     exit 0
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  Instalacion
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Write-Host ''
 Write-Host '  Almacen de instrumentos - instalacion de la unidad de red' -ForegroundColor White
 Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
@@ -146,7 +207,7 @@ Escribir "  Servidor : $Endpoint"
 Escribir "  Bucket   : $Bucket"
 Escribir "  Unidad   : ${Letra}:"
 
-# ── 1. Comprobar que la letra este libre ─────────────────────────────────────
+# -- 1. Comprobar que la letra este libre -------------------------------------
 Paso "Comprobando que la unidad ${Letra}: este libre"
 if (Test-Path "${Letra}:\") {
     # Si ya la monto una instalacion previa de este mismo script, no es un
@@ -154,17 +215,17 @@ if (Test-Path "${Letra}:\") {
     $yaEsNuestra = Get-CimInstance Win32_Process -Filter "Name = 'rclone.exe'" |
                    Where-Object { $_.CommandLine -like "*${Remoto}:*" -and $_.CommandLine -like "*${Letra}:*" }
     if ($yaEsNuestra) {
-        Aviso "Ya estaba montada por una instalacion anterior; se volvera a montar."
+        Aviso 'Ya estaba montada por una instalacion anterior; se volvera a montar.'
         foreach ($p in $yaEsNuestra) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
         Start-Sleep -Seconds 2
     } else {
         Salir-ConError "La letra ${Letra}: ya esta ocupada por otra unidad. Vuelve a ejecutar con otra letra, por ejemplo:`n         .\Instalar-UnidadInstrumentos.ps1 -Letra U"
     }
 } else {
-    Bien "Libre."
+    Bien 'Libre.'
 }
 
-# ── 2. WinFsp ────────────────────────────────────────────────────────────────
+# -- 2. WinFsp ----------------------------------------------------------------
 Paso 'Comprobando WinFsp'
 
 $winfspInstalado = (Test-Path 'HKLM:\SOFTWARE\WOW6432Node\WinFsp') -or
@@ -179,7 +240,7 @@ if ($winfspInstalado) {
 
     # Se resuelve la version mas reciente en el momento en vez de fijar una URL:
     # un enlace con numero de version envejece y deja el instalador roto para
-    # quien lo ejecute dentro de un año.
+    # quien lo ejecute dentro de un anio.
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $release = Invoke-RestMethod 'https://api.github.com/repos/winfsp/winfsp/releases/latest' -UseBasicParsing
@@ -211,12 +272,12 @@ if ($winfspInstalado) {
     }
 }
 
-# ── 3. rclone ────────────────────────────────────────────────────────────────
+# -- 3. rclone ----------------------------------------------------------------
 Paso 'Comprobando rclone'
 
-$rclone = Buscar-Rclone
-if ($rclone) {
-    Bien "Ya estaba instalado ($rclone)."
+$script:Rclone = Buscar-Rclone
+if ($script:Rclone) {
+    Bien "Ya estaba instalado ($script:Rclone)."
 } else {
     Escribir '   No esta. Descargando...'
     New-Item -ItemType Directory -Force $DirRclone | Out-Null
@@ -239,11 +300,11 @@ if ($rclone) {
     Copy-Item $exe.FullName (Join-Path $DirRclone 'rclone.exe') -Force
     Remove-Item $zip, $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
-    $rclone = Join-Path $DirRclone 'rclone.exe'
-    Bien "Instalado en $rclone"
+    $script:Rclone = Join-Path $DirRclone 'rclone.exe'
+    Bien "Instalado en $script:Rclone"
 }
 
-# ── 4. Credenciales ──────────────────────────────────────────────────────────
+# -- 4. Credenciales ----------------------------------------------------------
 Paso 'Credenciales de acceso'
 
 # Si el remoto ya esta configurado y responde, no se vuelve a pedir nada. Esto
@@ -252,84 +313,88 @@ Paso 'Credenciales de acceso'
 # contrasena solo consigue que la persona no lo intente.
 $yaConfigurado = $false
 if (-not $AccessKey) {
-    $remotos = & $rclone listremotes 2>$null
-    if ($LASTEXITCODE -eq 0 -and ($remotos -contains "${Remoto}:")) {
-        & $rclone lsd "${Remoto}:$Bucket" 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { $yaConfigurado = $true }
+    $lista = Invocar-Rclone @('listremotes')
+    if ($lista.Codigo -eq 0 -and $lista.Texto -match "(?m)^$([regex]::Escape($Remoto)):\s*$") {
+        $prueba = Invocar-Rclone @('lsd', "${Remoto}:$Bucket")
+        if ($prueba.Codigo -eq 0) { $yaConfigurado = $true }
     }
 }
 
 if ($yaConfigurado) {
-    Bien 'Este equipo ya estaba configurado y el servidor responde; se conservan las credenciales.'
-}
-
-if (-not $yaConfigurado -and -not $AccessKey) {
-    Escribir '   Son las que te dieron para este equipo (no son las de tu correo'
-    Escribir '   ni las del sistema Cohorte).'
+    Bien 'Este equipo ya estaba configurado y el servidor responde; se conservan los datos.'
+} else {
     Write-Host ''
-    $AccessKey = Read-Host '   Usuario de subida'
-}
-if (-not $yaConfigurado -and -not $AccessKey) { Salir-ConError 'Sin usuario no se puede continuar.' }
+    Escribir '   Ahora hacen falta los dos datos que te dieron para este equipo.'
+    Escribir '   No son los de tu correo ni los del sistema Cohorte: son aparte,'
+    Escribir '   solo para esta carpeta.'
+    Write-Host ''
 
-if (-not $yaConfigurado -and -not $SecretKey) {
-    $segura = Read-Host '   Contrasena' -AsSecureString
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($segura)
-    try {
-        $SecretKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-    } finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    if (-not $AccessKey) {
+        Write-Host '   1) Usuario  (algo parecido a "instrumentos-upload")' -ForegroundColor White
+        $AccessKey = Read-Host '      Escribelo aqui y pulsa Enter'
+        if (-not $AccessKey) { Salir-ConError 'No se escribio ningun usuario. Vuelve a ejecutar este archivo.' }
     }
+
+    if (-not $SecretKey) {
+        Write-Host ''
+        Write-Host '   2) Contrasena' -ForegroundColor White
+        Escribir '      No se vera nada mientras la escribes. Es normal: escribela'
+        Escribir '      completa, o pegala con clic derecho, y pulsa Enter.'
+        $segura = Read-Host '      Contrasena' -AsSecureString
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($segura)
+        try {
+            $SecretKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        } finally {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+        if (-not $SecretKey) { Salir-ConError 'No se escribio ninguna contrasena. Vuelve a ejecutar este archivo.' }
+    }
+
+    # -- 5. Configurar el remoto ----------------------------------------------
+    Paso 'Guardando la configuracion'
+
+    # Se usa el propio rclone en vez de escribir el .conf a mano: asi respeta
+    # cualquier otro remoto que la persona ya tenga configurado, y no hay riesgo
+    # de dejar el archivo con codificacion o saltos de linea que no entienda.
+    Invocar-Rclone @('config', 'delete', $Remoto) | Out-Null
+
+    $cfg = Invocar-Rclone @(
+        'config', 'create', $Remoto, 's3',
+        'provider=Minio',
+        "endpoint=$Endpoint",
+        "access_key_id=$AccessKey",
+        "secret_access_key=$SecretKey",
+        'region=us-east-1',
+        'force_path_style=true',
+        # no_check_bucket no es opcional: sin el, rclone empieza preguntando por
+        # la raiz del servidor, que no cae en la ruta del bucket y se la queda la
+        # aplicacion web. Con el, todo va bajo el prefijo correcto.
+        'no_check_bucket=true'
+    )
+    if ($cfg.Codigo -ne 0) { Salir-ConError "No se pudo guardar la configuracion.`n`n$($cfg.Texto)" }
+    Bien 'Configuracion guardada.'
 }
-if (-not $yaConfigurado -and -not $SecretKey) { Salir-ConError 'Sin contrasena no se puede continuar.' }
 
-# ── 5. Configurar el remoto ──────────────────────────────────────────────────
-if (-not $yaConfigurado) {
-Paso 'Guardando la configuracion de rclone'
-
-# Se usa el propio rclone en vez de escribir el .conf a mano: asi respeta
-# cualquier otro remoto que la persona ya tenga configurado, y no hay riesgo de
-# dejar el archivo con codificacion o saltos de linea que rclone no entienda.
-& $rclone config delete $Remoto 2>$null | Out-Null
-
-$argumentos = @(
-    'config', 'create', $Remoto, 's3',
-    'provider=Minio',
-    "endpoint=$Endpoint",
-    "access_key_id=$AccessKey",
-    "secret_access_key=$SecretKey",
-    'region=us-east-1',
-    'force_path_style=true',
-    # no_check_bucket no es opcional: sin el, rclone empieza preguntando por la
-    # raiz del servidor, que no cae en la ruta del bucket y se la queda la
-    # aplicacion web. Con el, todas las peticiones van bajo el prefijo correcto.
-    'no_check_bucket=true'
-)
-& $rclone @argumentos | Out-Null
-if ($LASTEXITCODE -ne 0) { Salir-ConError 'rclone no pudo guardar la configuracion.' }
-Bien 'Configuracion guardada.'
-}
-
-# ── 6. Probar la conexion ANTES de montar ────────────────────────────────────
+# -- 6. Probar la conexion ANTES de montar ------------------------------------
 # Separar esta prueba del montaje es lo que permite distinguir "la contrasena
 # esta mal" de "el driver no arranco". Si se falla aqui, no se registra nada.
 Paso 'Probando la conexion con el servidor'
 
-$salida = & $rclone lsd "${Remoto}:$Bucket" 2>&1
-if ($LASTEXITCODE -ne 0) {
-    $texto = ($salida | Out-String).Trim()
-    if ($texto -match 'AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch') {
-        Salir-ConError "El servidor rechazo las credenciales. Revisa el usuario y la contrasena.`n`n$texto"
+$prueba = Invocar-Rclone @('lsd', "${Remoto}:$Bucket")
+if ($prueba.Codigo -ne 0) {
+    if ($prueba.Texto -match 'AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch') {
+        Salir-ConError "El servidor rechazo los datos. Revisa el usuario y la contrasena, y vuelve a ejecutar este archivo.`n`n$($prueba.Texto)"
     }
-    Salir-ConError "No se pudo conectar con el servidor.`n`n$texto"
+    Salir-ConError "No se pudo conectar con el servidor.`n`n$($prueba.Texto)"
 }
 Bien 'Conexion correcta.'
 
-# ── 7. Tarea programada ──────────────────────────────────────────────────────
+# -- 7. Tarea programada ------------------------------------------------------
 Paso 'Programando el montaje automatico'
 
 $argsMontaje = "mount ${Remoto}:$Bucket ${Letra}: --network-mode --vfs-cache-mode full --no-console --log-file `"$LogMontaje`" --log-level INFO"
 
-$accion = New-ScheduledTaskAction -Execute $rclone -Argument $argsMontaje
+$accion = New-ScheduledTaskAction -Execute $script:Rclone -Argument $argsMontaje
 
 # El retraso da tiempo a que la red este lista: en muchos equipos el inicio de
 # sesion ocurre antes de que haya conectividad, y el montaje arrancaria a ciegas.
@@ -356,7 +421,7 @@ try {
 }
 Bien 'Se montara sola en cada inicio de sesion.'
 
-# ── 8. Montar ahora ──────────────────────────────────────────────────────────
+# -- 8. Montar ahora ----------------------------------------------------------
 Paso 'Montando la unidad'
 Start-ScheduledTask -TaskName $Tarea
 
@@ -382,7 +447,7 @@ if ($montada) {
     Escribir ''
     Escribir '  Casi siempre es que WinFsp necesita un reinicio para activarse.'
     Escribir '  Reinicia el equipo: la unidad deberia aparecer sola al entrar.'
-    Escribir "  Si no, el detalle del error esta en:"
+    Escribir '  Si no, el detalle del error esta en:'
     Escribir "    $LogMontaje"
 }
 
