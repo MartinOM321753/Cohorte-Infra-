@@ -209,7 +209,13 @@ Desplegar:  ${env.SHOULD_DEPLOY}"""
         stage('Asegurar almacén de instrumentos') {
             when { expression { env.SHOULD_DEPLOY == 'true' } }
             steps {
-                withCredentials([file(credentialsId: 'minio-public-env-file', variable: 'MINIO_PUBLIC_ENV')]) {
+                // El try/catch es lo que hace que esta etapa sea de verdad no
+                // bloqueante: sin el, withCredentials aborta el build cuando la
+                // credencial todavia no existe, que es justo el estado normal
+                // del primer deploy despues de agregar este stack.
+                script {
+                  try {
+                    withCredentials([file(credentialsId: 'minio-public-env-file', variable: 'MINIO_PUBLIC_ENV')]) {
                     sh '''
                         set +e
                         cp -f "$MINIO_PUBLIC_ENV" minio-public/.env
@@ -239,6 +245,10 @@ Desplegar:  ${env.SHOULD_DEPLOY}"""
                         docker logs minio-public-init --tail 30 2>&1 || true
                         exit 0
                     '''
+                    }
+                  } catch (err) {
+                    echo "ADVERTENCIA: no se pudo asegurar el almacén de instrumentos (${err.message}). El despliegue de la aplicación no se ve afectado."
+                  }
                 }
             }
         }
