@@ -89,8 +89,12 @@ curl -I https://staging.hwcs.cipps.unam.mx/archivos-instrumentos/prueba.jpg
 Una credencial por equipo, para poder revocarlas por separado. Desde el servidor:
 
 ```bash
-docker run --rm --network traefik-net -it minio/mc sh
+docker run --rm --network traefik-net -it --entrypoint sh minio/mc
 ```
+
+El `--entrypoint sh` no es opcional: la imagen trae `mc` como entrypoint, asi
+que sin sobreescribirlo cualquier `sh -c ...` se lo come `mc` como argumentos
+suyos y responde "`sh` is not a recognized command".
 
 Y dentro del contenedor (sustituyendo usuario y contraseña):
 
