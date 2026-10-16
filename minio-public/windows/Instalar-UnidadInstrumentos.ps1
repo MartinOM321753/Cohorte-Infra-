@@ -158,6 +158,14 @@ if ($Desinstalar) {
         Bien 'Credencial borrada de este equipo.'
     }
 
+    # El lanzador sin ventana lleva dentro la linea de comando del montaje: se
+    # va con la tarea, aunque se conserve rclone.
+    $lanzador = Join-Path $DirRclone 'montar-oculto.vbs'
+    if (Test-Path $lanzador) {
+        Remove-Item $lanzador -Force -ErrorAction SilentlyContinue
+        Bien 'Lanzador eliminado.'
+    }
+
     # -- Programas de apoyo, opcional -----------------------------------------
     # Se pregunta en vez de quitarlos sin avisar: otras herramientas pueden
     # depender de WinFsp, y quitarlo con el Explorador abierto puede dejarlo
@@ -394,23 +402,72 @@ Paso 'Programando el montaje automatico'
 
 $argsMontaje = "mount ${Remoto}:$Bucket ${Letra}: --network-mode --vfs-cache-mode full --no-console --log-file `"$LogMontaje`" --log-level INFO"
 
-$accion = New-ScheduledTaskAction -Execute $script:Rclone -Argument $argsMontaje
+# -- Lanzador sin ventana -----------------------------------------------------
+# rclone en Windows SOLO corre en primer plano: --daemon se ignora. Siempre hay
+# un proceso vivo mientras exista la unidad, y lo unico negociable es si tiene
+# ventana. Lanzarlo directamente deja una consola abierta en la sesion del
+# usuario -- molesta, y peor: si la cierra, se queda sin unidad.
+#
+# El lanzador resuelve las dos cosas. El 0 de Run() es SW_HIDE (ninguna
+# ventana); el True hace que wscript espere, para que la tarea programada siga
+# vigilando el proceso en vez de darse por terminada al instante. Y WScript.Quit
+# propaga el codigo de salida: sin eso la tarea siempre pareceria exitosa y el
+# reintento automatico no se activaria nunca.
+#
+# El comando se escribe dentro del .vbs en vez de pasarse por argumentos para no
+# pelear con el entrecomillado de la ruta del log.
+$lanzador = Join-Path $DirRclone 'montar-oculto.vbs'
+$usarLanzador = [bool](Get-Command wscript.exe -ErrorAction SilentlyContinue)
+
+if ($usarLanzador) {
+    $cmd = '"' + $script:Rclone + '" ' + $argsMontaje
+    $vbs = @"
+' Generado por el instalador del almacen de instrumentos. No editar a mano:
+' se reescribe en cada instalacion.
+Set sh = CreateObject("WScript.Shell")
+WScript.Quit sh.Run("$($cmd.Replace('"','""'))", 0, True)
+"@
+    # ASCII a proposito: wscript no necesita Unicode y asi se evita cualquier
+    # problema de BOM en la primera linea.
+    [System.IO.File]::WriteAllText($lanzador, $vbs, [System.Text.Encoding]::ASCII)
+    $accion = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$lanzador`""
+} else {
+    # Windows 11 puede tener VBScript retirado. En ese caso se lanza rclone
+    # directo y se confia en su --no-console, que oculta la ventana un instante
+    # despues de abrirla.
+    Aviso 'Este equipo no tiene wscript; la consola puede parpadear al iniciar sesion.'
+    $accion = New-ScheduledTaskAction -Execute $script:Rclone -Argument $argsMontaje
+}
 
 # El retraso da tiempo a que la red este lista: en muchos equipos el inicio de
 # sesion ocurre antes de que haya conectividad, y el montaje arrancaria a ciegas.
 $disparador = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $disparador.Delay = 'PT30S'
 
+# Repeticion cada 5 minutos, para siempre. Es lo que convierte la tarea en
+# auto-reparable: antes, si el montaje se caia -- red perdida, proceso cerrado a
+# mano -- el unico disparador era "al iniciar sesion", asi que la unica forma de
+# recuperar la unidad era reiniciar el equipo. Ahora Windows reintenta solo, y
+# MultipleInstancesPolicy=IgnoreNew descarta el intento cuando ya esta montada,
+# de modo que la repeticion no acumula montajes duplicados.
+#
+# New-ScheduledTaskTrigger no acepta -RepetitionInterval junto con -AtLogOn, asi
+# que se injerta el bloque de un disparador -Once.
+$plantilla = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+$disparador.Repetition = $plantilla.Repetition
+$disparador.Repetition.StopAtDurationEnd = $false
+
 # LogonType Interactive: la unidad pertenece a la sesion de Windows. Si la tarea
-# corriera fuera de la sesion del usuario, el proceso viviria pero la unidad no
-# apareceria nunca en su Explorador.
+# corriera fuera de la sesion del usuario -- como lo haria un servicio -- el
+# proceso viviria pero la unidad no apareceria nunca en su Explorador.
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
 # ExecutionTimeLimit en cero es imprescindible: por defecto Windows mata las
 # tareas a los 3 dias, y esta tiene que vivir indefinidamente porque el proceso
-# ES la unidad.
+# ES la unidad. RestartInterval cubre el caso de que rclone termine con error.
 $ajustes = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-             -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+             -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew `
+             -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 99
 
 try {
     Register-ScheduledTask -TaskName $Tarea -Action $accion -Trigger $disparador `
@@ -419,7 +476,8 @@ try {
 } catch {
     Salir-ConError "No se pudo crear la tarea programada ($($_.Exception.Message))."
 }
-Bien 'Se montara sola en cada inicio de sesion.'
+Bien 'Se montara sola en cada inicio de sesion, sin ventana.'
+Bien 'Si se cae, Windows la vuelve a montar en unos minutos.'
 
 # -- 8. Montar ahora ----------------------------------------------------------
 Paso 'Montando la unidad'

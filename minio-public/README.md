@@ -131,6 +131,33 @@ una sin afectar a las demás. Si prefieres automatizarlo del todo:
 .\Instalar-UnidadInstrumentos.ps1 -AccessKey laura-pc -SecretKey "<contraseña>"
 ```
 
+La unidad se monta **sin ninguna ventana** y se repara sola. Eso no sale gratis
+y conviene saber por qué está hecho así:
+
+rclone en Windows **solo corre en primer plano** — `--daemon` se ignora. Así que
+mientras exista la unidad hay un proceso vivo, y lo único negociable es si tiene
+ventana. Lanzarlo directo dejaba una consola abierta en la sesión del usuario:
+molesta, y peor, si la cerraba se quedaba sin unidad. La tarea lo lanza a través
+de un `.vbs` de dos líneas que el instalador genera, con `Run(..., 0, True)`:
+el `0` es *sin ventana* y el `True` mantiene al lanzador esperando, para que la
+tarea siga vigilando el proceso en vez de darse por terminada al instante.
+
+Y la tarea repite cada 5 minutos indefinidamente, con
+`MultipleInstancesPolicy=IgnoreNew`. Esa combinación es lo que la hace
+auto-reparable: si el montaje se cae —se perdió la red, alguien cerró el
+proceso— Windows lo reintenta solo, y cuando ya está montada el intento se
+descarta sin acumular montajes duplicados. Antes el único disparador era "al
+iniciar sesión", de modo que **la única forma de recuperar la unidad era
+reiniciar el equipo**. Para no esperar los 5 minutos, la carpeta incluye
+*Reconectar unidad.bat*.
+
+> **Por qué no es un servicio de Windows**, que es lo primero que uno pide: un
+> servicio corre fuera de la sesión del usuario, y una letra de unidad pertenece
+> a la sesión. Montada desde un servicio, la unidad existiría pero **no
+> aparecería en el Explorador de esa persona**. Por eso el principal de la tarea
+> es `InteractiveToken`. Lo que se quería de un servicio —que sea invisible y que
+> se levante solo— se consigue con el lanzador oculto y la repetición.
+
 Para quitarlo hay un segundo archivo, *Desinstalar unidad de instrumentos.bat*:
 elimina la tarea, detiene el montaje y **borra la credencial guardada en ese
 equipo**. No toca nada del servidor — los archivos siguen ahí. Al final pregunta
@@ -265,7 +292,7 @@ Windows mata las tareas a los 3 días, y aquí el proceso *es* la unidad.
 
 | Comportamiento | Por qué |
 | --- | --- |
-| Sin internet, la unidad no existe | No hay copia local del contenido. |
+| Sin internet, la unidad no existe | No hay copia local del contenido. Al volver la red, Windows la remonta solo en unos minutos. |
 | Copiar carpetas grandes es más lento que en disco | Cada archivo es una petición HTTPS; miles de archivos chicos tardan mucho más que uno grande del mismo peso. |
 | Renombrar una carpeta copia y borra todo su contenido | S3 no sabe renombrar: el prefijo es parte del nombre de cada objeto. |
 | Borrar es inmediato y no pasa por la Papelera | Lo cubre el versionado del bucket, no Windows. |

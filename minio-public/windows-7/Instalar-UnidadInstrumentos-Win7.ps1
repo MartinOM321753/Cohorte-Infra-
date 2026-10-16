@@ -210,6 +210,14 @@ if ($Desinstalar) {
         Bien 'Credencial borrada de este equipo.'
     }
 
+    # El lanzador sin ventana lleva dentro la linea de comando del montaje: se
+    # va con la tarea, aunque se conserve rclone.
+    $lanzadorViejo = Join-Path $DirRclone 'montar-oculto.vbs'
+    if (Test-Path $lanzadorViejo) {
+        Remove-Item $lanzadorViejo -Force -ErrorAction SilentlyContinue
+        Bien 'Lanzador eliminado.'
+    }
+
     # -- Programas de apoyo, opcional -----------------------------------------
     Write-Host ''
     Escribir '  WinFsp y rclone se quedan instalados salvo que pidas lo contrario.'
@@ -471,6 +479,34 @@ Paso 'Programando el montaje automatico'
 $argsMontaje = "mount ${Remoto}:$Bucket ${Letra}: --network-mode --vfs-cache-mode full --no-console --log-file `"$LogMontaje`" --log-level INFO"
 $usuario = "$env:USERDOMAIN\$env:USERNAME"
 
+# -- Lanzador sin ventana -----------------------------------------------------
+# rclone en Windows SOLO corre en primer plano: --daemon se ignora. Siempre hay
+# un proceso vivo mientras exista la unidad, y lo unico negociable es si tiene
+# ventana. Lanzarlo directamente deja una consola abierta en la sesion del
+# usuario -- molesta, y peor: si la cierra, se queda sin unidad.
+#
+# El 0 de Run() es SW_HIDE (ninguna ventana); el True hace que wscript espere,
+# para que la tarea siga vigilando el proceso en vez de darse por terminada al
+# instante. WScript.Quit propaga el codigo de salida: sin eso la tarea siempre
+# pareceria exitosa y el reintento automatico no se activaria nunca.
+#
+# El comando se escribe dentro del .vbs en vez de pasarse por argumentos para no
+# pelear con el entrecomillado de la ruta del log.
+$lanzador = Join-Path $DirRclone 'montar-oculto.vbs'
+$cmd = '"' + $script:Rclone + '" ' + $argsMontaje
+$vbs = @"
+' Generado por el instalador del almacen de instrumentos. No editar a mano:
+' se reescribe en cada instalacion.
+Set sh = CreateObject("WScript.Shell")
+WScript.Quit sh.Run("$($cmd.Replace('"','""'))", 0, True)
+"@
+[System.IO.File]::WriteAllText($lanzador, $vbs, [System.Text.Encoding]::ASCII)
+
+# En Windows 7 wscript.exe siempre esta: VBScript es parte del sistema y no se
+# puede retirar como en Windows 11.
+$comandoTarea = Join-Path $env:WINDIR 'System32\wscript.exe'
+$argumentosTarea = "`"$lanzador`""
+
 # En Windows 7 no existen los cmdlets *-ScheduledTask, asi que la tarea se
 # define en XML y se registra con schtasks. Tres valores no son opcionales:
 #   LogonType InteractiveToken -- la unidad pertenece a la sesion de Windows. Si
@@ -491,6 +527,10 @@ $xml = @"
       <Enabled>true</Enabled>
       <UserId>$usuario</UserId>
       <Delay>PT30S</Delay>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
     </LogonTrigger>
   </Triggers>
   <Principals>
@@ -518,11 +558,15 @@ $xml = @"
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>99</Count>
+    </RestartOnFailure>
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>$($script:Rclone)</Command>
-      <Arguments>$argsMontaje</Arguments>
+      <Command>$comandoTarea</Command>
+      <Arguments>$argumentosTarea</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -542,7 +586,8 @@ Remove-Item $xmlPath -ErrorAction SilentlyContinue
 if ($codigo -ne 0) {
     Salir-ConError "No se pudo crear la tarea programada.`n`n$(($salida | Out-String).Trim())"
 }
-Bien 'Se montara sola en cada inicio de sesion.'
+Bien 'Se montara sola en cada inicio de sesion, sin ventana.'
+Bien 'Si se cae, Windows la vuelve a montar en unos minutos.'
 
 # -- 8. Montar ahora ----------------------------------------------------------
 Paso 'Montando la unidad'
