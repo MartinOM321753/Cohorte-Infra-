@@ -111,6 +111,16 @@ services:
       # proxia al backend. Sin esta variable Spring asume que la peticion original
       # fue HTTP y genera URLs absolutas con el esquema equivocado.
       SERVER_FORWARD_HEADERS_STRATEGY: framework
+      # Solicitudes publicas de acceso a datos
+      SOLICITUDES_VERIFICATION_SECRET: ${SOLICITUDES_VERIFICATION_SECRET:-}
+      SOLICITUDES_TRUSTED_PROXIES: ${SOLICITUDES_TRUSTED_PROXIES:-}
+      SOLICITUDES_BLOCKED_EMAIL_DOMAINS: ${SOLICITUDES_BLOCKED_EMAIL_DOMAINS:-}
+      SOLICITUDES_MAXMIND_ACCOUNT_ID: ${SOLICITUDES_MAXMIND_ACCOUNT_ID:-}
+      SOLICITUDES_MAXMIND_LICENSE_KEY: ${SOLICITUDES_MAXMIND_LICENSE_KEY:-}
+      SOLICITUDES_LOCAL_TESTING: ${SOLICITUDES_LOCAL_TESTING:-false}
+      SOLICITUDES_TURNSTILE_SITE_KEY: ${SOLICITUDES_TURNSTILE_SITE_KEY:-}
+      SOLICITUDES_TURNSTILE_SECRET_KEY: ${SOLICITUDES_TURNSTILE_SECRET_KEY:-}
+      SOLICITUDES_TURNSTILE_HOSTNAMES: ${SOLICITUDES_TURNSTILE_HOSTNAMES:-}
     ports:
       # El frontend habla con el backend por la red interna ("backend:8080", ver nginx.conf).
       # Este puerto solo es para depuracion/Swagger desde el propio host; no debe ser publico.
