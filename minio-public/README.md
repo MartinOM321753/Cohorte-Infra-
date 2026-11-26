@@ -89,8 +89,12 @@ curl -I https://staging.hwcs.cipps.unam.mx/archivos-instrumentos/prueba.jpg
 Una credencial por equipo, para poder revocarlas por separado. Desde el servidor:
 
 ```bash
-docker run --rm --network traefik-net -it minio/mc sh
+docker run --rm --network traefik-net -it --entrypoint sh minio/mc
 ```
+
+El `--entrypoint sh` no es opcional: la imagen trae `mc` como entrypoint, asi
+que sin sobreescribirlo cualquier `sh -c ...` se lo come `mc` como argumentos
+suyos y responde "`sh` is not a recognized command".
 
 Y dentro del contenedor (sustituyendo usuario y contraseña):
 
@@ -111,7 +115,124 @@ mc admin user remove pub laura-pc
 Convierte el bucket en una unidad `S:` que el Explorador trata como una carpeta
 más. Requiere permisos de administrador **una sola vez** en cada equipo.
 
-### Instalación
+### La vía normal: el instalador
+
+Para equipos ajenos —y sobre todo remotos— usa [`windows/`](windows/): se manda
+la carpeta comprimida, la persona hace doble clic en
+*Instalar unidad de instrumentos.bat* y queda todo hecho. El script instala
+WinFsp y rclone si faltan, guarda la configuración, comprueba la conexión antes
+de tocar nada más, registra la tarea de inicio de sesión y monta la unidad.
+
+Las credenciales **no** viajan dentro del archivo: el instalador las pide al
+ejecutarse. Manda a cada persona las suyas por otro canal, para poder revocar a
+una sin afectar a las demás. Si prefieres automatizarlo del todo:
+
+```powershell
+.\Instalar-UnidadInstrumentos.ps1 -AccessKey laura-pc -SecretKey "<contraseña>"
+```
+
+La unidad se monta **sin ninguna ventana** y se repara sola. Eso no sale gratis
+y conviene saber por qué está hecho así:
+
+rclone en Windows **solo corre en primer plano** — `--daemon` se ignora. Así que
+mientras exista la unidad hay un proceso vivo, y lo único negociable es si tiene
+ventana. Lanzarlo directo dejaba una consola abierta en la sesión del usuario:
+molesta, y peor, si la cerraba se quedaba sin unidad. La tarea lo lanza a través
+de un `.vbs` de dos líneas que el instalador genera, con `Run(..., 0, True)`:
+el `0` es *sin ventana* y el `True` mantiene al lanzador esperando, para que la
+tarea siga vigilando el proceso en vez de darse por terminada al instante.
+
+Y la tarea repite cada 5 minutos indefinidamente, con
+`MultipleInstancesPolicy=IgnoreNew`. Esa combinación es lo que la hace
+auto-reparable: si el montaje se cae —se perdió la red, alguien cerró el
+proceso— Windows lo reintenta solo, y cuando ya está montada el intento se
+descarta sin acumular montajes duplicados. Antes el único disparador era "al
+iniciar sesión", de modo que **la única forma de recuperar la unidad era
+reiniciar el equipo**. Para no esperar los 5 minutos, la carpeta incluye
+*Reconectar unidad.bat*.
+
+> **Por qué no es un servicio de Windows**, que es lo primero que uno pide: un
+> servicio corre fuera de la sesión del usuario, y una letra de unidad pertenece
+> a la sesión. Montada desde un servicio, la unidad existiría pero **no
+> aparecería en el Explorador de esa persona**. Por eso el principal de la tarea
+> es `InteractiveToken`. Lo que se quería de un servicio —que sea invisible y que
+> se levante solo— se consigue con el lanzador oculto y la repetición.
+
+Para quitarlo hay un segundo archivo, *Desinstalar unidad de instrumentos.bat*:
+elimina la tarea, detiene el montaje y **borra la credencial guardada en ese
+equipo**. No toca nada del servidor — los archivos siguen ahí. Al final pregunta
+si quieres desinstalar también WinFsp y rclone; por defecto los deja, porque otras
+herramientas pueden depender de ellos. Con `-ConservarCredenciales` se salta el
+borrado de la llave, para quitar la unidad un rato sin tener que volver a pedirla.
+
+> Quitar WinFsp con el Explorador abierto puede dejarlo colgado hasta que se
+> reinicie el equipo: el escritorio desaparece aunque el proceso siga vivo. El
+> desinstalador lo avisa antes de hacerlo. Se recupera reiniciando, o con
+> Ctrl+Shift+Esc → *Archivo* → *Ejecutar nueva tarea* → `explorer.exe`.
+
+> Borrar la credencial del equipo **no la anula en el servidor**. Si la persona
+> la copió, le sigue sirviendo desde otra máquina. Cuando alguien deja el
+> proyecto, lo que de verdad corta el acceso es darla de baja en el servidor con
+> `mc admin user remove` (ver *Dar de alta a más personas*). El desinstalador
+> limpia el equipo; la baja del usuario es la que revoca.
+
+Otras opciones del script: `-Letra U` si la S está ocupada, y `-Endpoint` /
+`-Bucket` si algún día cambia el dominio.
+
+Re-ejecutar el instalador es la forma de reparar un montaje que desapareció: si
+el equipo ya estaba configurado y el servidor responde, conserva las
+credenciales y no vuelve a pedir nada.
+
+No es un `.exe` a propósito. Un ejecutable sin firma digital hace que SmartScreen
+lo bloquee con la pantalla de *"Windows protegió tu PC"*, que es justo el
+problema cuando quien lo recibe está a un país de distancia y no tienes cómo
+guiarlo. El par `.bat` + `.ps1` se comporta igual para el usuario y no cruza
+ningún filtro.
+
+### Windows 7
+
+Los equipos con Windows 7 usan una carpeta aparte, [`windows-7/`](windows-7/),
+con su propio par de `.bat`. No es capricho: casi todo el mecanismo cambia.
+
+| | Windows 8/10/11 | Windows 7 |
+| --- | --- | --- |
+| PowerShell | 5.1 | 2.0 — sin `Invoke-WebRequest`, `Expand-Archive` ni cmdlets de tareas |
+| Tarea programada | cmdlets `*-ScheduledTask` | `schtasks.exe` + definición XML |
+| rclone | última versión | **fijada en 1.63.1** |
+| WinFsp | última versión | **fijada en 1.12.22339** |
+
+Las dos versiones fijadas son el punto importante. De rclone 1.64 en adelante se
+compila con Go 1.21, que **dejó fuera a Windows 7**: el binario no arranca
+siquiera. Y 1.12.22339 es la última WinFsp que el proyecto probó en Windows 7
+SP1. Instalar "lo más nuevo" en esos equipos no da un fallo claro, da un
+ejecutable que no abre.
+
+Dos cosas más que solo pasan en Windows 7:
+
+- **TLS 1.2.** Windows 7 negocia TLS 1.0 por defecto y los servidores de descarga
+  ya no lo aceptan. El script lo fuerza, pero si el equipo no tiene .NET 4.6 ni
+  los parches al día, no hay forma. Para eso, el instalador **usa los archivos
+  que encuentre junto a él** antes de intentar descargar nada: se bajan una vez
+  desde un equipo moderno, se meten en la carpeta y el ZIP viaja completo.
+
+  ```bash
+  curl -LO https://downloads.rclone.org/v1.63.1/rclone-v1.63.1-windows-amd64.zip
+  curl -LO https://downloads.rclone.org/v1.63.1/rclone-v1.63.1-windows-386.zip
+  curl -LO https://github.com/winfsp/winfsp/releases/download/v1.12.22339/winfsp-1.12.22339.msi
+  ```
+
+  El de 32 bits solo hace falta si algún equipo lo es; el script elige solo.
+
+- **Firma SHA-2.** Si el instalador se queja de que el controlador no está
+  firmado, a ese Windows 7 le falta la KB4474419. Es la causa más común de que
+  WinFsp no instale.
+
+La carpeta incluye un `LEEME.txt` escrito para quien recibe el equipo, no para
+quien administra.
+
+### A mano, si prefieres hacerlo paso a paso
+
+#### Instalación
 
 1. Instalar [WinFsp](https://winfsp.dev) — el driver que permite a Windows montar
    sistemas de archivos que no son discos reales (es lo mismo que usan las
@@ -119,7 +240,7 @@ más. Requiere permisos de administrador **una sola vez** en cada equipo.
 2. Instalar [rclone](https://rclone.org/downloads/) y dejar el ejecutable en una
    ruta fija, por ejemplo `C:\rclone\rclone.exe`.
 
-### Configuración del remoto
+#### Configuración del remoto
 
 Ejecutar `rclone config` y crear un remoto nuevo con estos valores:
 
@@ -146,7 +267,7 @@ no_check_bucket = true
 > nuestro prefijo y se la queda el frontend. Con el bucket fijado en la ruta,
 > todas las peticiones quedan bajo `/archivos-instrumentos` y el router las atrapa.
 
-### Montaje
+#### Montaje
 
 ```bash
 rclone mount instrumentos:archivos-instrumentos S: --network-mode --vfs-cache-mode full
@@ -159,15 +280,19 @@ rclone mount instrumentos:archivos-instrumentos S: --network-mode --vfs-cache-mo
   normalidad.
 
 Para que aparezca sola al encender: **Programador de tareas** → nueva tarea →
-disparador *Al iniciar sesión* → acción: ese mismo comando, marcando *Ejecutar
-tanto si el usuario inició sesión como si no* solo si se quiere que también viva
-sin sesión abierta.
+disparador *Al iniciar sesión* → acción: ese mismo comando.
+
+**No** marques *"Ejecutar tanto si el usuario inició sesión como si no"*. Una
+unidad montada pertenece a la sesión de Windows: con esa opción la tarea corre
+fuera de la sesión, el proceso vive pero la unidad nunca aparece en el
+Explorador. Conviene también quitarle el límite de ejecución —por defecto
+Windows mata las tareas a los 3 días, y aquí el proceso *es* la unidad.
 
 ### Lo que hay que saber antes de repartirla
 
 | Comportamiento | Por qué |
 | --- | --- |
-| Sin internet, la unidad no existe | No hay copia local del contenido. |
+| Sin internet, la unidad no existe | No hay copia local del contenido. Al volver la red, Windows la remonta solo en unos minutos. |
 | Copiar carpetas grandes es más lento que en disco | Cada archivo es una petición HTTPS; miles de archivos chicos tardan mucho más que uno grande del mismo peso. |
 | Renombrar una carpeta copia y borra todo su contenido | S3 no sabe renombrar: el prefijo es parte del nombre de cada objeto. |
 | Borrar es inmediato y no pasa por la Papelera | Lo cubre el versionado del bucket, no Windows. |

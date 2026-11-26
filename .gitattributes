@@ -1,1 +1,9 @@
 *.sh text eol=lf
+
+# Los .bat se distribuyen y se ejecutan en Windows: cmd.exe puede tropezar con
+# saltos de linea de Unix, asi que se fuerzan CRLF pase lo que pase.
+*.bat text eol=crlf
+
+# Los .ps1 llevan BOM (PowerShell 5.1 lee como ANSI los archivos sin el), asi
+# que git no debe tocar su codificacion.
+*.ps1 -text

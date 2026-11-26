@@ -1,0 +1,65 @@
+ALMACEN DE INSTRUMENTOS -- INSTALACION EN WINDOWS 7
+===================================================
+
+QUE HACE
+--------
+Crea en tu equipo una unidad S: que se ve y se usa como una carpeta normal,
+pero que en realidad guarda los archivos en el servidor. Lo que copies ahi lo
+ven los demas; lo que borres, se borra para todos.
+
+
+COMO SE INSTALA
+---------------
+1. Descomprime esta carpeta completa en el escritorio.
+   No ejecutes los archivos desde dentro del ZIP: no funcionan.
+
+2. Doble clic en:
+       Instalar unidad de instrumentos (Windows 7).bat
+
+3. Windows pedira permiso de administrador una vez, para instalar el
+   controlador que permite crear la unidad. Acepta.
+
+4. Te pedira dos datos que te dieron aparte: un usuario y una contrasena.
+   No son los del correo ni los del sistema Cohorte.
+   La contrasena no se ve mientras la escribes: es normal, escribela completa
+   y pulsa Enter.
+
+5. Al terminar, abre Equipo y ahi estara la unidad S:.
+
+De ahi en adelante la unidad aparece sola cada vez que enciendas el equipo.
+No hay que volver a ejecutar nada.
+
+
+SI ALGO NO SALE
+---------------
+"La unidad no aparecio todavia"
+    Reinicia el equipo. En Windows 7 el controlador suele necesitarlo.
+    Al volver a entrar, la unidad deberia estar.
+
+"El controlador no esta firmado"
+    A este Windows 7 le faltan actualizaciones. Hace falta la KB4474419
+    (compatibilidad con firma SHA-2) y tener el equipo al dia.
+
+"No se pudo descargar"
+    El equipo no puede conectarse a los servidores de descarga. Pide el
+    paquete que trae los instaladores incluidos y vuelve a intentarlo.
+
+"El servidor rechazo los datos"
+    El usuario o la contrasena estan mal escritos. Vuelve a ejecutar el .bat.
+
+
+PARA QUITARLO
+-------------
+Doble clic en:
+    Desinstalar unidad de instrumentos (Windows 7).bat
+
+Quita la unidad de este equipo. Los archivos siguen en el servidor.
+
+
+IMPORTANTE
+----------
+- Los archivos NO estan en tu computadora. Sin internet, la unidad aparece
+  vacia o no responde. No se ha perdido nada.
+- Borrar en S: borra en el servidor, y no pasa por la Papelera de reciclaje.
+- Sirve para dejar y consultar archivos. Si vas a trabajar un documento
+  durante horas, copialo a tu disco, trabajalo y despues devuelvelo.
